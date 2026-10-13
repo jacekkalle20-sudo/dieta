@@ -1,4 +1,4 @@
-// defaults.js – v0.1.0 – wartości startowe (specyfikacja v1.3, model danych v1.2)
+// defaults.js – v0.1.2 – wartości startowe (specyfikacja v1.3, model danych v1.2)
 export const SLOTS = ["sniadanie", "ii_sniadanie", "obiad", "przekaska", "kolacja"];
 export const SLOT_NAMES = { sniadanie: "Śniadanie", ii_sniadanie: "II śniadanie", obiad: "Obiad", przekaska: "Przekąska", kolacja: "Kolacja", deser: "Deser" };
 export const CATEGORY_NAMES = { sniadanie: "Śniadania", ii_sniadanie: "II śniadania", przekaska: "Przekąski", obiad: "Obiady", kolacja: "Kolacje", deser: "Desery" };
@@ -28,7 +28,7 @@ export function defaultConfig(ownerEmail) {
     weekStart: 6, // sobota
     weekRules: {
       shared: { obiad: [1, 2, 3, 4, 5, 6, 7], sniadanie: [6, 7] },
-      repeat: { obiad: { type: "blocks", blocks: [[6, 7], [1, 2], [3, 4], [5]] } },
+      repeat: { obiad: { type: "blocks", blocks: [{ days: [6, 7] }, { days: [1, 2] }, { days: [3, 4] }, { days: [5] }] } }, // Firestore nie przyjmuje tablic w tablicach
       noRepeatDays: 7
     },
     scaleLimits: { min: 0.5, max: 2.0 },
