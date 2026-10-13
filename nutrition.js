@@ -1,4 +1,4 @@
-// nutrition.js – v0.1.0 – wartości przepisu i formatowanie ilości
+// nutrition.js – v0.2.0 – wartości przepisu i formatowanie ilości
 export function recipeTotals(recipe, products) {
   const t = { kcal: 0, p: 0, f: 0, c: 0, fe: 0 };
   for (const x of recipe.ingredients) {
@@ -20,12 +20,12 @@ export function formatAmount(x, product, scale = 1) {
   const g = x.g * scale;
   const ml = /\bml\b/.test(x.txt || "") && product?.density;
   if (ml) return `${Math.round(g / product.density / 10) * 10 || Math.round(g / product.density)} ml`;
-  const unitTxt = (x.txt || "").match(/\b(szt|kromka|kromki|ząbek|ząbki|łodygi|puszka)\b/);
+  const unitTxt = (x.txt || "").match(/(?<![\p{L}])(sztuki|sztuka|sztuk|szt|kromka|kromki|ząbek|ząbki|łodygi|puszka)(?![\p{L}])/u);
   const grams = g >= 20 ? Math.round(g / 5) * 5 : Math.round(g);
   if (unitTxt && product?.units) {
-    const key = { szt: "szt", kromka: "kromka", kromki: "kromka", "ząbek": "zabek", "ząbki": "zabek", "łodygi": "lodyga", puszka: "puszka" }[unitTxt[1]];
+    const key = { szt: "szt", sztuka: "szt", sztuki: "szt", sztuk: "szt", kromka: "kromka", kromki: "kromka", "ząbek": "zabek", "ząbki": "zabek", "łodygi": "lodyga", puszka: "puszka" }[unitTxt[1]];
     const w = product.units[key];
-    if (w) { const n = Math.round(g / w * 2) / 2; return `${grams} g (${String(n).replace(".", ",")} ${unitTxt[1]})`; }
+    if (w) { const n = Math.round(g / w * 2) / 2; return `${grams} g (${String(n).replace(".", ",")} ${key === "szt" ? "szt" : unitTxt[1]})`; }
   }
   return `${grams} g`;
 }

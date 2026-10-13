@@ -1,15 +1,17 @@
-// app.js – Dieta dla Rodziny – v0.1.2 (M1: szkielet, logowanie, inicjalizacja, zaproszenia, import/eksport, przepisy)
+// app.js – Dieta dla Rodziny – v0.2.0 (M2: edycja profili, przepis w porcji osoby)
 import { APP_VERSION, APP_STAGE } from "./version.js";
 import { OWNER_EMAIL } from "./config.js";
 import { defaultConfig, defaultProfiles, CATEGORY_NAMES, TAG_NAMES, FAMILY_NAMES, SLOT_NAMES, DAY_NAMES, productChunkOf, recipeChunkOf } from "./defaults.js";
 import { validateProducts, validateRecipes, diffItems, mergeIntoChunks } from "./importer.js";
 import { recipeTotals, recipeFamilies, formatAmount } from "./nutrition.js";
+import { slotKcal, portionScale, defaultSlotFor, validateSlots } from "./scaling.js";
+import { SLOTS } from "./defaults.js";
 
 const demo = new URLSearchParams(location.search).has("demo");
 const { createBackend } = await import(demo ? "./backend-demo.js" : "./backend-firebase.js");
 const be = createBackend();
 
-const S = { user: null, config: null, profiles: {}, products: {}, recipes: {}, invite: null, filters: { q: "", cat: "", tag: "", profile: "" } };
+const S = { user: null, config: null, profiles: {}, products: {}, recipes: {}, invite: null, filters: { q: "", cat: "", tag: "", profile: "" }, portion: { profile: "", slot: "", base: false, recipe: "" } };
 const $ = (sel) => document.querySelector(sel);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const isAdmin = () => S.invite?.role === "admin";
@@ -99,10 +101,10 @@ function renderShell() {
 addEventListener("hashchange", () => S.config && route());
 function route() {
   const [, view, arg] = (location.hash || "#/przepisy").split("/");
-  document.querySelectorAll(".nav a").forEach(a => a.classList.toggle("on", a.dataset.k === (view === "przepis" ? "przepisy" : view)));
+  document.querySelectorAll(".nav a").forEach(a => a.classList.toggle("on", a.dataset.k === ({ przepis: "przepisy", profil: "wiecej" }[view] || view)));
   const m = $("#main"); if (!m) return;
   ({ dzis: () => vSoon(m, "Dziś", "M3"), tydzien: () => vSoon(m, "Plan tygodnia", "M3"), zakupy: () => vSoon(m, "Lista zakupów", "M4"),
-     przepisy: () => vRecipes(m), przepis: () => vRecipe(m, arg), wiecej: () => vMore(m) }[view] || (() => vRecipes(m)))();
+     przepisy: () => vRecipes(m), przepis: () => vRecipe(m, arg), profil: () => vProfile(m, arg), wiecej: () => vMore(m) }[view] || (() => vRecipes(m)))();
   window.scrollTo(0, 0);
 }
 
@@ -153,17 +155,40 @@ function vRecipes(m) {
 function vRecipe(m, id) {
   const r = S.recipes[id];
   if (!r) { m.innerHTML = `<div class="card">Nie znaleziono przepisu.</div>`; return; }
-  const t = recipeTotals(r, S.products); const fam = recipeFamilies(r, S.products);
-  const blocked = profileList().filter(([, p]) => (p.exclusions?.families || []).some(x => fam.includes(x))).map(([, p]) => p.name);
+  const P = S.portion;
+  if (P.recipe !== id) { P.recipe = id; P.slot = ""; }
+  if (!P.profile || !S.profiles[P.profile]) P.profile = S.invite.profileId || profileList()[0]?.[0];
+  const prof = S.profiles[P.profile];
+  if (!P.slot || !prof?.slots?.[P.slot]) P.slot = defaultSlotFor(r.category, prof);
+  const base = recipeTotals(r, S.products); const fam = recipeFamilies(r, S.products);
+  const target = slotKcal(prof, P.slot);
+  const lim = S.config.scaleLimits || { min: 0.5, max: 2.0 };
+  const ps = P.base ? { scale: 1, raw: 1, ok: true } : portionScale(base.kcal, target, lim);
+  const k = ps.scale; const t = Object.fromEntries(Object.entries(base).map(([a, v]) => [a, v * k]));
+  const blocked = profileList().filter(([, p]) => (p.exclusions?.families || []).some(x => fam.includes(x)));
+  const mine = (prof?.exclusions?.families || []).filter(x => fam.includes(x));
   m.innerHTML = `<a href="#/przepisy" class="back">← Przepisy</a>
     <h2>${esc(r.name)}</h2>
     <div class="meta">${CATEGORY_NAMES[r.category]}${r.timeMin ? ` · ${r.timeMin} min` : ""} · ${esc(r.source)} ${(r.tags || []).map(x => `<span class="tag ${x}">${TAG_NAMES[x] || x}</span>`).join("")}</div>
+    <div class="card portion">
+      <div class="row tight">
+        <select id="pProf">${profileList().map(([pid, p]) => `<option value="${pid}" ${pid === P.profile ? "selected" : ""}>${esc(p.name)}</option>`).join("")}</select>
+        <select id="pSlot">${Object.keys(prof?.slots || {}).map(sl => `<option value="${sl}" ${sl === P.slot ? "selected" : ""}>${SLOT_NAMES[sl]} · ${slotKcal(prof, sl)} kcal</option>`).join("")}</select>
+        <label class="chk"><input type="checkbox" id="pBase" ${P.base ? "checked" : ""}> porcja bazowa</label>
+      </div>
+      <div class="small ${ps.ok ? "muted" : "warntext"}">${P.base ? `Porcja bazowa przepisu: ${fmt(base.kcal)} kcal.` :
+        `Porcja dla: <b>${esc(prof?.name)}</b> · ${SLOT_NAMES[P.slot]} ${target} kcal · skala ×${fmt(k, 2)}${ps.ok ? "" : ` – poza zakresem ${fmt(lim.min, 1)}–${fmt(lim.max, 1)}: przepis słabo pasuje do tego posiłku`}`}</div>
+    </div>
+    ${mine.length ? `<div class="warn"><b>${esc(prof.name)}</b> wyklucza: ${mine.map(x => FAMILY_NAMES[x] || x).join(", ")} – ten przepis nie będzie proponowany tej osobie.</div>`
+      : blocked.length ? `<div class="note">Zawiera: ${fam.map(x => FAMILY_NAMES[x] || x).join(", ")} – nie dla: ${blocked.map(([, p]) => esc(p.name)).join(", ")}</div>` : ""}
     <div class="stats"><div><b>${fmt(t.kcal)}</b>kcal</div><div><b>${fmt(t.p)}</b>białko g</div><div><b>${fmt(t.f)}</b>tłuszcz g</div><div><b>${fmt(t.c)}</b>węgl. g</div><div><b>${fmt(t.fe, 1)}</b>żelazo mg</div></div>
-    ${blocked.length ? `<div class="warn">Zawiera: ${fam.map(x => FAMILY_NAMES[x] || x).join(", ")} – nie dla: ${blocked.map(esc).join(", ")}</div>` : ""}
-    <div class="card"><h3>Składniki <span class="muted small">(porcja bazowa · przeliczanie na osobę w etapie M2)</span></h3>
-      <ul class="ing">${r.ingredients.map(x => { const p = S.products[x.p]; return `<li><span>${esc(p?.name || x.p)}</span><span>${esc(formatAmount(x, p))}</span></li>`; }).join("")}</ul></div>
+    <div class="card"><h3>Składniki</h3>
+      <ul class="ing">${r.ingredients.map(x => { const p = S.products[x.p]; return `<li><span>${esc(p?.name || x.p)}</span><span>${esc(formatAmount(x, p, k))}</span></li>`; }).join("")}</ul></div>
     <div class="card"><h3>Przygotowanie</h3><p>${esc(r.steps)}</p></div>
-    <p class="muted small">Źródło podawało ${r.sourceKcal ?? "–"} kcal; wartości powyżej wyliczone z gramatur. Id: ${id}, wersja ${r.rev}.</p>`;
+    <p class="muted small">Porcja bazowa ${fmt(base.kcal)} kcal (wyliczone z gramatur; źródło podawało ${r.sourceKcal ?? "–"} kcal). Id: ${id}, wersja ${r.rev}.</p>`;
+  $("#pProf").onchange = (e) => { P.profile = e.target.value; P.slot = ""; vRecipe(m, id); };
+  $("#pSlot").onchange = (e) => { P.slot = e.target.value; vRecipe(m, id); };
+  $("#pBase").onchange = (e) => { P.base = e.target.checked; vRecipe(m, id); };
 }
 
 // ---------- więcej: profil, rodzina, import ----------
@@ -172,8 +197,8 @@ function vMore(m) {
   m.innerHTML = `<h2>Więcej</h2>
     <div class="card"><h3>Zalogowano</h3><p>${esc(S.user.name)} · ${esc(S.user.email)}<br>Profil: <b>${esc(me?.name || "—")}</b> · rola: ${isAdmin() ? "administrator" : "domownik"}</p>
       <button class="btn" id="logout">Wyloguj</button></div>
-    <div class="card"><h3>Profile rodziny <span class="muted small">(edycja w etapie M2)</span></h3>
-      <div class="profiles">${profileList().map(([id, p]) => `<div class="prof"><div><b>${esc(p.name)}</b>${p.flags?.ironRich ? ` <span class="tag zelazo">Fe+</span>` : ""}${p.uid ? "" : ` <span class="muted small">(bez konta)</span>`} · ${p.kcalTarget} kcal</div>
+    <div class="card"><h3>Profile rodziny</h3>
+      <div class="profiles">${profileList().map(([id, p]) => `<div class="prof">${canEdit(id) ? `<a class="btn small edit" href="#/profil/${id}">Edytuj</a>` : ""}<div><b>${esc(p.name)}</b>${p.flags?.ironRich ? ` <span class="tag zelazo">Fe+</span>` : ""}${p.uid ? "" : ` <span class="muted small">(bez konta)</span>`} · ${p.kcalTarget} kcal</div>
         <div class="small">${Object.entries(p.slots).map(([s, v]) => `${SLOT_NAMES[s]} ${v}%`).join(" · ")}</div>
         ${(p.fixedExceptions || []).length ? `<div class="small muted">Poza domem: ${p.fixedExceptions.map(e => `${e.days.map(d => DAY_NAMES[d]).join(", ")} – ${e.slots.map(s => SLOT_NAMES[s]).join(", ")}`).join("; ")}</div>` : ""}
         ${(p.exclusions?.families || []).length ? `<div class="small muted">Wyklucza: ${p.exclusions.families.map(x => FAMILY_NAMES[x] || x).join(", ")}</div>` : ""}</div>`).join("")}</div></div>
@@ -181,6 +206,66 @@ function vMore(m) {
     <div class="card muted small">Wersja aplikacji ${APP_VERSION} (${APP_STAGE}) · produkty ${S.config.versions?.products || "—"} · przepisy ${S.config.versions?.recipes || "—"}</div>`;
   $("#logout").onclick = () => be.signOut();
   if (isAdmin()) bindAdmin();
+}
+
+function canEdit(pid) { return isAdmin() || (S.profiles[pid]?.uid && S.profiles[pid].uid === S.user.uid); }
+
+function vProfile(m, pid) {
+  const src = S.profiles[pid];
+  if (!src) { m.innerHTML = `<div class="card">Nie ma takiego profilu.</div>`; return; }
+  if (!canEdit(pid)) { m.innerHTML = `<a href="#/wiecej" class="back">← Więcej</a><div class="card">Możesz edytować tylko swój profil.</div>`; return; }
+  const d = structuredClone(src);
+  d.exclusions ||= { families: [], products: [] }; d.flags ||= {}; d.fixedExceptions ||= [];
+  const draw = () => {
+    const err = validateSlots(d.slots);
+    const sum = Object.values(d.slots).reduce((a, b) => a + (Number.isFinite(b) ? b : 0), 0);
+    m.innerHTML = `<a href="#/wiecej" class="back">← Więcej</a><h2>Profil: ${esc(d.name)}</h2>
+      <div class="card"><h3>Cel dzienny</h3>
+        <div class="row tight"><input id="kcal" type="number" min="800" max="5000" step="50" value="${d.kcalTarget}" style="width:120px"> <span class="muted">kcal / dzień</span></div></div>
+      <div class="card"><h3>Posiłki i udział kcal</h3>
+        <table class="tbl slots"><tr><th>Posiłek</th><th>%</th><th>kcal</th></tr>
+        ${SLOTS.map(sl => { const on = d.slots[sl] != null; return `<tr><td><label class="chk"><input type="checkbox" data-slot="${sl}" ${on ? "checked" : ""}> ${SLOT_NAMES[sl]}</label></td>
+          <td>${on ? `<input type="number" min="1" max="100" step="1" data-pct="${sl}" value="${d.slots[sl]}" style="width:80px">` : ""}</td>
+          <td>${on ? Math.round(d.kcalTarget * (d.slots[sl] || 0) / 100) : ""}</td></tr>`; }).join("")}
+        <tr><td><b>Suma</b></td><td><b class="${Math.round(sum) === 100 ? "" : "warntext"}">${sum}%</b></td><td>${Math.round(d.kcalTarget * sum / 100)}</td></tr></table>
+        ${err ? `<div class="warntext small">${err}</div>` : ""}</div>
+      <div class="card"><h3>Stałe wyjątki – poza domem</h3>
+        ${d.fixedExceptions.length ? d.fixedExceptions.map((e, i) => `<div class="exc"><span>${e.days.map(x => DAY_NAMES[x]).join(", ")}: ${e.slots.map(x => SLOT_NAMES[x]).join(", ")}${e.note ? ` (${esc(e.note)})` : ""}${e.kcal ? ` · ~${e.kcal} kcal` : ""}</span>
+          <button class="btn small" data-delexc="${i}">Usuń</button></div>`).join("") : `<p class="muted small">Brak.</p>`}
+        <details class="add"><summary>Dodaj wyjątek</summary>
+          <div class="small muted">Dni:</div><div class="row tight">${[6, 7, 1, 2, 3, 4, 5].map(x => `<label class="chk"><input type="checkbox" data-eday="${x}"> ${DAY_NAMES[x]}</label>`).join("")}</div>
+          <div class="small muted">Posiłki:</div><div class="row tight">${Object.keys(d.slots).map(sl => `<label class="chk"><input type="checkbox" data-eslot="${sl}"> ${SLOT_NAMES[sl]}</label>`).join("")}</div>
+          <div class="row tight"><input id="enote" placeholder="opis, np. szkoła" style="flex:1 1 160px"><input id="ekcal" type="number" placeholder="kcal (opcjonalnie)" style="width:170px"><button class="btn" id="eadd">Dodaj</button></div>
+        </details></div>
+      <div class="card"><h3>Wykluczenia</h3><div class="row tight">
+        ${Object.entries(FAMILY_NAMES).map(([f, n]) => `<label class="chk"><input type="checkbox" data-fam="${f}" ${d.exclusions.families.includes(f) ? "checked" : ""}> ${n}</label>`).join("")}</div>
+        <p class="muted small">Przepisy z wykluczonym składnikiem (w każdej postaci) nie będą proponowane tej osobie ani we wspólnych posiłkach z jej udziałem.</p></div>
+      <div class="card"><h3>Dieta</h3><label class="chk"><input type="checkbox" id="fe" ${d.flags.ironRich ? "checked" : ""}> Bogata w żelazo (Fe+) – generator częściej proponuje przepisy z tagiem „żelazo”</label></div>
+      <div class="row"><button class="btn primary" id="save" ${err ? "disabled" : ""}>Zapisz</button><a class="btn" href="#/wiecej">Anuluj</a></div>`;
+    $("#kcal").onchange = (e) => { const v = Math.round(+e.target.value); if (v >= 800 && v <= 5000) d.kcalTarget = v; else toast("Cel kcal: 800–5000", "err"); draw(); };
+    m.querySelectorAll("[data-slot]").forEach(c => c.onchange = () => { const sl = c.dataset.slot;
+      if (c.checked) d.slots[sl] = 10; else { delete d.slots[sl]; d.fixedExceptions.forEach(e => e.slots = e.slots.filter(x => x !== sl)); d.fixedExceptions = d.fixedExceptions.filter(e => e.slots.length); }
+      d.slots = Object.fromEntries(SLOTS.filter(x => d.slots[x] != null).map(x => [x, d.slots[x]])); draw(); });
+    m.querySelectorAll("[data-pct]").forEach(c => c.onchange = () => { d.slots[c.dataset.pct] = Math.round(+c.value); draw(); });
+    m.querySelectorAll("[data-delexc]").forEach(b => b.onclick = () => { d.fixedExceptions.splice(+b.dataset.delexc, 1); draw(); });
+    $("#eadd").onclick = () => {
+      const days = [...m.querySelectorAll("[data-eday]:checked")].map(c => +c.dataset.eday).sort((a, b) => a - b);
+      const slots = [...m.querySelectorAll("[data-eslot]:checked")].map(c => c.dataset.eslot);
+      if (!days.length || !slots.length) return toast("Zaznacz dni i posiłki", "err");
+      const kc = Math.round(+$("#ekcal").value) || null;
+      d.fixedExceptions.push({ days, slots, kcal: kc, note: $("#enote").value.trim() }); draw();
+    };
+    m.querySelectorAll("[data-fam]").forEach(c => c.onchange = () => { const f = c.dataset.fam;
+      d.exclusions.families = c.checked ? [...new Set([...d.exclusions.families, f])] : d.exclusions.families.filter(x => x !== f); });
+    $("#fe").onchange = (e) => { d.flags.ironRich = e.target.checked; };
+    $("#save").onclick = async () => {
+      const e2 = validateSlots(d.slots); if (e2) return toast(e2, "err");
+      $("#save").disabled = true;
+      try { await be.setProfile(pid, d); S.profiles[pid] = d; toast("Profil zapisany", "ok"); location.hash = "#/wiecej"; }
+      catch (e) { toast("Błąd zapisu: " + (e.code || e.message), "err"); $("#save").disabled = false; }
+    };
+  };
+  draw();
 }
 
 function adminHtml() {
