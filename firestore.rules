@@ -1,0 +1,42 @@
+rules_version = '2';
+// firestore.rules – Dieta dla Rodziny – v0.1.0
+// Wklej w konsoli Firebase: Firestore Database → Reguły. Zamień WPISZ_SWOJ_ADRES@gmail.com na swój Gmail (małymi literami).
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn()  { return request.auth != null; }
+    function email()     { return request.auth.token.email.lower(); }
+    function owner()     { return signedIn() && email() == 'wpisz_swoj_adres@gmail.com'; }
+    function hh()        { return get(/databases/$(database)/documents/config/household).data; }
+    function hhExists()  { return exists(/databases/$(database)/documents/config/household); }
+    function invited()   { return signedIn() && hhExists() && email() in hh().invites; }
+    function admin()     { return invited() && hh().invites[email()].role == 'admin'; }
+
+    match /config/{docId} {
+      allow read: if invited();
+      // pierwsze uruchomienie: tylko właściciel startowy, tylko gdy konfiguracja jeszcze nie istnieje
+      allow create: if owner() && docId == 'household' && !hhExists()
+                    && request.resource.data.invites[email()].role == 'admin';
+      allow update: if admin()
+                    && request.resource.data.invites[email()].role == 'admin'; // admin nie może odebrać sobie uprawnień
+    }
+
+    match /profiles/{pid} {
+      allow read: if invited();
+      allow create, delete: if admin();
+      allow update: if admin()
+        || (invited() && resource.data.uid == request.auth.uid)
+        // przypięcie profilu przy pierwszym logowaniu zaproszonej osoby
+        || (invited() && resource.data.uid == null
+            && hh().invites[email()].profileId == pid
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['uid'])
+            && request.resource.data.uid == request.auth.uid);
+    }
+
+    match /products/{doc} { allow read: if invited(); allow write: if admin(); }
+    match /recipes/{doc}  { allow read: if invited(); allow write: if admin(); }
+    match /weeks/{doc}    { allow read, write: if invited(); }
+    match /absences/{doc} { allow read, write: if invited(); }
+    match /shopping/{list}/{rest=**} { allow read, write: if invited(); }
+    match /shopping/{list} { allow read, write: if invited(); }
+  }
+}
