@@ -1,4 +1,4 @@
-// app.js – Dieta dla Rodziny – v0.1.0 (M1: szkielet, logowanie, inicjalizacja, zaproszenia, import/eksport, przepisy)
+// app.js – Dieta dla Rodziny – v0.1.1 (M1: szkielet, logowanie, inicjalizacja, zaproszenia, import/eksport, przepisy)
 import { APP_VERSION, APP_STAGE } from "./version.js";
 import { OWNER_EMAIL } from "./config.js";
 import { defaultConfig, defaultProfiles, CATEGORY_NAMES, TAG_NAMES, FAMILY_NAMES, SLOT_NAMES, DAY_NAMES, productChunkOf, recipeChunkOf } from "./defaults.js";
@@ -78,6 +78,7 @@ async function boot() {
     renderShell(); route();
   } catch (e) {
     console.error(e);
+    if (e.code === "permission-denied") return renderMessage("Brak dostępu", `Konto <b>${esc(S.user.email)}</b> nie ma dostępu do aplikacji. Poproś Jacka lub Agatę o zaproszenie.`);
     renderMessage("Błąd połączenia", esc(e.code || e.message));
   }
 }

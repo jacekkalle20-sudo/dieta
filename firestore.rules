@@ -1,5 +1,5 @@
 rules_version = '2';
-// firestore.rules – Dieta dla Rodziny – v0.1.0
+// firestore.rules – Dieta dla Rodziny – v0.1.1
 // Wklej w konsoli Firebase: Firestore Database → Rules → Publish.
 service cloud.firestore {
   match /databases/{database}/documents {
@@ -12,7 +12,7 @@ service cloud.firestore {
     function admin()     { return invited() && hh().invites[email()].role == 'admin'; }
 
     match /config/{docId} {
-      allow read: if invited();
+      allow read: if invited() || owner(); // właściciel musi móc sprawdzić, czy konfiguracja już istnieje
       // pierwsze uruchomienie: tylko właściciel startowy, tylko gdy konfiguracja jeszcze nie istnieje
       allow create: if owner() && docId == 'household' && !hhExists()
                     && request.resource.data.invites[email()].role == 'admin';
