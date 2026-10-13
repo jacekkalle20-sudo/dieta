@@ -1,3 +1,3 @@
 // version.js – numer wersji aplikacji (zmieniany przy każdym wydaniu)
-export const APP_VERSION = "0.2.0";
-export const APP_STAGE = "M2 – profile i porcje";
+export const APP_VERSION = "0.3.0";
+export const APP_STAGE = "M3 – plan tygodnia";

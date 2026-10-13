@@ -1,4 +1,4 @@
-/* styles.css – Dieta dla Rodziny – v0.2.0 */
+/* styles.css – Dieta dla Rodziny – v0.3.0 */
 :root{
   --bg:#F6F3EC; --card:#FFFFFF; --ink:#1F2A26; --muted:#6B756F; --line:#E3DED3;
   --brand:#2F5D50; --brand-ink:#FFFFFF; --accent:#E07A3F; --fe:#8E2C2C; --ok:#2E7D4F; --err:#B3261E;
@@ -79,3 +79,39 @@ main{flex:1;padding:12px 16px 90px;max-width:900px;width:100%;margin:0 auto}
 details.add{margin-top:10px}
 details.add summary{cursor:pointer;color:var(--brand);font-weight:600;padding:6px 0}
 .tbl.slots input{min-height:36px}
+/* --- M3: plan tygodnia --- */
+.weekhead{display:flex;align-items:center;gap:10px;margin-bottom:6px}
+.weekhead .wl{flex:1;text-align:center}
+.days{display:grid;grid-template-columns:1fr;gap:10px;margin-top:10px}
+@media (min-width:900px){.days{grid-template-columns:repeat(auto-fill,minmax(270px,1fr))}}
+.day{margin:0;padding:12px 14px}
+.day summary{cursor:pointer;padding:2px 0 8px;list-style:none}
+.day summary::-webkit-details-marker{display:none}
+.slot{border-top:1px solid var(--line);padding:8px 0}
+.slot.shared{background:linear-gradient(90deg,rgba(47,93,80,.07),transparent);margin:0 -14px;padding:8px 14px}
+.slot .sh{font-size:.8rem;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.03em;display:flex;align-items:center;gap:6px}
+.slot .sh .dots{margin-left:auto}
+.sl{display:flex;flex-wrap:wrap;align-items:center;gap:4px 6px;margin-top:4px}
+.sl.person b{min-width:52px}
+.sl .dots{margin-left:auto}
+.dots{min-height:30px;padding:0 10px;font-size:1rem;line-height:1}
+.badge{display:inline-block;font-size:.7rem;padding:1px 7px;border-radius:99px;background:var(--line);color:var(--ink);text-transform:none;letter-spacing:0;font-weight:600}
+.badge.sh2{background:var(--brand);color:var(--brand-ink)}
+.hint{font-size:.8rem;color:var(--fe);margin-top:4px}
+#sheet{position:fixed;inset:0;z-index:30}
+.sheet-bg{position:absolute;inset:0;background:rgba(0,0,0,.4)}
+.sheet-box{position:absolute;left:0;right:0;bottom:0;max-height:85vh;overflow:auto;background:var(--card);border-radius:18px 18px 0 0;padding:16px 16px calc(16px + env(safe-area-inset-bottom))}
+@media (min-width:900px){.sheet-box{left:50%;right:auto;bottom:auto;top:10vh;transform:translateX(-50%);width:520px;border-radius:16px}}
+.sheet-box h3{margin-bottom:10px} .sheet-box h4{margin:14px 0 6px;font-size:.95rem}
+.acts{display:flex;flex-direction:column;gap:8px}
+.acts .btn{justify-content:flex-start}
+.whorow{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--line)}
+.rlist{display:flex;flex-direction:column;gap:6px;margin-top:10px;max-height:50vh;overflow:auto}
+.ritem{display:flex;justify-content:space-between;gap:10px;text-align:left;padding:10px 12px;border:1px solid var(--line);border-radius:10px;background:var(--card);color:var(--ink);font:inherit;cursor:pointer}
+.seg{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px}
+.seg button{flex:1 1 auto;min-height:38px;border:1px solid var(--line);border-radius:10px;background:var(--card);color:var(--ink);font:inherit;padding:0 10px;cursor:pointer}
+.seg button.on{background:var(--brand);color:var(--brand-ink);border-color:var(--brand);font-weight:600}
+.tbl.rules td,.tbl.rules th{text-align:center;padding:4px} .tbl.rules td:first-child{text-align:left}
+.tbl.rules input{width:20px;height:20px;min-height:0}
+.tslot{margin-bottom:10px}
+.tslot .sh{font-size:.8rem;font-weight:700;color:var(--muted);text-transform:uppercase}

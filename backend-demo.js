@@ -1,9 +1,11 @@
-// backend-demo.js – v0.1.2 – tryb pokazowy bez Firebase (adres z ?demo=1); dane tylko w pamięci przeglądarki
+// backend-demo.js – v0.3.0 – tryb pokazowy bez Firebase (adres z ?demo=1); dane tylko w pamięci przeglądarki
 // Sprawdza ograniczenia Firestore (brak tablic w tablicach, brak undefined), żeby błędy wychodziły już w demo.
 import { OWNER_EMAIL } from "./config.js";
 
 export function createBackend() {
-  const store = { config: null, profiles: {}, products: {}, recipes: {} };
+  const store = { config: null, profiles: {}, products: {}, recipes: {}, weeks: {} };
+  const watchers = {};
+  const notify = (sat) => (watchers[sat] || []).forEach(cb => setTimeout(() => cb(store.weeks[sat] ? clone(store.weeks[sat]) : null, false), 0));
   let authCb = () => {};
   let user = null;
   const check = (x, inArr = false, path = "") => {
@@ -23,6 +25,15 @@ export function createBackend() {
     async setProfile(id, d) { store.profiles[id] = clone(d); },
     async updateProfile(id, p) { Object.assign(store.profiles[id], clone(p)); },
     async getChunks(coll) { return clone(store[coll]); },
-    async setChunk(coll, id, d) { store[coll][id] = clone(d); }
+    async setChunk(coll, id, d) { store[coll][id] = clone(d); },
+    async getWeek(sat) { return store.weeks[sat] ? clone(store.weeks[sat]) : null; },
+    async setWeek(sat, d) { store.weeks[sat] = clone(d); notify(sat); },
+    async updateMeals(sat, items, meta = {}) {
+      const w = store.weeks[sat]; if (!w) throw Object.assign(new Error("brak tygodnia"), { code: "not-found" });
+      for (const it of items) { w.days[it.date] ||= {}; w.days[it.date][it.slot] = clone(it.meal); }
+      Object.assign(w, clone(meta)); notify(sat);
+    },
+    watchWeek(sat, cb) { (watchers[sat] ||= []).push(cb); setTimeout(() => cb(store.weeks[sat] ? clone(store.weeks[sat]) : null, false), 0);
+      return () => { watchers[sat] = watchers[sat].filter(x => x !== cb); }; }
   };
 }
