@@ -1,11 +1,11 @@
 rules_version = '2';
 // firestore.rules – Dieta dla Rodziny – v0.1.0
-// Wklej w konsoli Firebase: Firestore Database → Reguły. Zamień WPISZ_SWOJ_ADRES@gmail.com na swój Gmail (małymi literami).
+// Wklej w konsoli Firebase: Firestore Database → Rules → Publish.
 service cloud.firestore {
   match /databases/{database}/documents {
     function signedIn()  { return request.auth != null; }
     function email()     { return request.auth.token.email.lower(); }
-    function owner()     { return signedIn() && email() == 'wpisz_swoj_adres@gmail.com'; }
+    function owner()     { return signedIn() && email() == 'jacekkalle20@gmail.com'; }
     function hh()        { return get(/databases/$(database)/documents/config/household).data; }
     function hhExists()  { return exists(/databases/$(database)/documents/config/household); }
     function invited()   { return signedIn() && hhExists() && email() in hh().invites; }

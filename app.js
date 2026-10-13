@@ -1,6 +1,6 @@
 // app.js – Dieta dla Rodziny – v0.1.0 (M1: szkielet, logowanie, inicjalizacja, zaproszenia, import/eksport, przepisy)
 import { APP_VERSION, APP_STAGE } from "./version.js";
-import { OWNER_EMAIL } from "../config.js";
+import { OWNER_EMAIL } from "./config.js";
 import { defaultConfig, defaultProfiles, CATEGORY_NAMES, TAG_NAMES, FAMILY_NAMES, SLOT_NAMES, DAY_NAMES, productChunkOf, recipeChunkOf } from "./defaults.js";
 import { validateProducts, validateRecipes, diffItems, mergeIntoChunks } from "./importer.js";
 import { recipeTotals, recipeFamilies, formatAmount } from "./nutrition.js";

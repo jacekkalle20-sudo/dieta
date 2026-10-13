@@ -1,5 +1,5 @@
 // backend-demo.js – v0.1.0 – tryb pokazowy bez Firebase (adres z ?demo=1); dane tylko w pamięci przeglądarki
-import { OWNER_EMAIL } from "../config.js";
+import { OWNER_EMAIL } from "./config.js";
 
 export function createBackend() {
   const store = { config: null, profiles: {}, products: {}, recipes: {} };

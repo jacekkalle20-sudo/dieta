@@ -1,15 +1,13 @@
-// config.js – Dieta dla Rodziny – konfiguracja (uzupełnij według instrukcji wdrożenia)
+// config.js – Dieta dla Rodziny – konfiguracja projektu dieta-rodzina-9f152
 // Wersja aplikacji ustawiana w js/version.js
-
-// 1) Wklej tu obiekt firebaseConfig z konsoli Firebase (Ustawienia projektu → Twoje aplikacje → Konfiguracja SDK)
 export const firebaseConfig = {
-  apiKey: "WKLEJ_apiKey",
-  authDomain: "WKLEJ_authDomain",
-  projectId: "WKLEJ_projectId",
-  storageBucket: "WKLEJ_storageBucket",
-  messagingSenderId: "WKLEJ_messagingSenderId",
-  appId: "WKLEJ_appId"
+  apiKey: "AIzaSyCMO3KGhWDOw-LTdCn--epntA5G1zv2o1s",
+  authDomain: "dieta-rodzina-9f152.firebaseapp.com",
+  projectId: "dieta-rodzina-9f152",
+  storageBucket: "dieta-rodzina-9f152.firebasestorage.app",
+  messagingSenderId: "218204556675",
+  appId: "1:218204556675:web:8643e8e5f41e632c6afab6"
 };
 
-// 2) Twój adres Gmail – właściciel startowy (tylko on może zainicjować aplikację przy pierwszym uruchomieniu)
-export const OWNER_EMAIL = "WPISZ_SWOJ_ADRES@gmail.com";
+// Właściciel startowy (tylko on może zainicjować aplikację przy pierwszym uruchomieniu)
+export const OWNER_EMAIL = "jacekkalle20@gmail.com";
