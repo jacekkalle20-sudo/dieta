@@ -1,4 +1,4 @@
-// app.js – Dieta dla Rodziny – v0.3.0 (M3: plan tygodnia, generator, Dziś, reguły tygodnia)
+// app.js – Dieta dla Rodziny – v0.3.1 (M3: plan tygodnia, generator, Dziś, reguły tygodnia, dołączanie do posiłku)
 import { APP_VERSION, APP_STAGE } from "./version.js";
 import { OWNER_EMAIL } from "./config.js";
 import { defaultConfig, defaultProfiles, CATEGORY_NAMES, TAG_NAMES, FAMILY_NAMES, SLOT_NAMES, DAY_NAMES, productChunkOf, recipeChunkOf } from "./defaults.js";
@@ -19,12 +19,15 @@ const esc = (s) => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<"
 const isAdmin = () => S.invite?.role === "admin";
 const fmt = (n, d = 0) => Number(n).toLocaleString("pl-PL", { maximumFractionDigits: d, minimumFractionDigits: d });
 const profileList = () => Object.entries(S.profiles).sort((a, b) => (a[1].order || 9) - (b[1].order || 9));
+// Jedna kolejność wszędzie: posiłki wg SLOTS, osoby wg pola order
+const slotsOf = (p) => SLOTS.filter(sl => p?.slots?.[sl] != null);
+const byOrder = (pids) => [...pids].sort((a, b) => (S.profiles[a]?.order || 9) - (S.profiles[b]?.order || 9));
 
 function toast(msg, kind = "") {
   let box = document.getElementById("toasts");
   if (!box) { box = document.createElement("div"); box.id = "toasts"; document.body.appendChild(box); }
   const t = document.createElement("div"); t.className = "toast " + kind; t.textContent = msg;
-  box.appendChild(t); setTimeout(() => t.remove(), 3500);
+  box.appendChild(t); while (box.children.length > 2) box.firstChild.remove(); setTimeout(() => t.remove(), 3500);
 }
 
 // ---------- start / logowanie ----------
@@ -163,10 +166,17 @@ function vRecipe(m, id, cx = null) {
   const P = S.portion;
   const ckey = id + (cx ? `/${cx.date}/${cx.slot}/${cx.pid}` : "");
   if (P.recipe !== ckey) { P.recipe = ckey; P.slot = ""; P.amount = "me"; P.base = false;
-    if (cx) { P.profile = cx.pid || S.invite.profileId; P.slot = cx.slot; } }
+    if (cx) { P.profile = cx.pid || S.invite.profileId; P.slot = cx.slot;
+      const mm = S.week.data?.days?.[cx.date]?.[cx.slot]; // we wspólnym posiłku „dla mnie” = zalogowana osoba, jeśli je
+      if (mm?.mode === "shared" && W.participants(mm).includes(S.invite.profileId)) P.profile = S.invite.profileId; } }
   const wk = cx && S.week.data && S.week.sat === W.saturdayOf(cx.date) ? S.week.data : null;
   const meal = wk?.days?.[cx.date]?.[cx.slot];
-  const sharedCtx = meal && meal.mode === "shared" && meal.recipeId === id;
+  const cookCtx = meal && cx.pid !== undefined && W.recipeOf(meal, cx.pid) === id;
+  const ctxW = cookCtx ? ctxFor(wk.start) : null;
+  const cDay = cookCtx ? W.cookingScales(wk, ctxW, cx.date, cx.slot, "day", cx.pid) : null;
+  const cBlk = cookCtx ? W.cookingScales(wk, ctxW, cx.date, cx.slot, "block", cx.pid) : null;
+  const amtOpts = cookCtx ? [["me", "Dla mnie"], ...(cDay.rows.length > 1 ? [["all", "Dla wszystkich przy stole"]] : []), ...(cBlk.dates.length > 1 ? [["block", "Na cały blok"]] : [])] : [];
+  if (!amtOpts.some(([v]) => v === P.amount)) P.amount = "me";
   if (!P.profile || !S.profiles[P.profile]) P.profile = S.invite.profileId || profileList()[0]?.[0];
   const prof = S.profiles[P.profile];
   if (!P.slot || !prof?.slots?.[P.slot]) P.slot = defaultSlotFor(r.category, prof);
@@ -175,7 +185,7 @@ function vRecipe(m, id, cx = null) {
   const lim = S.config.scaleLimits || { min: 0.5, max: 2.0 };
   let ps = P.base ? { scale: 1, raw: 1, ok: true } : portionScale(base.kcal, target, lim);
   let cook = null;
-  if (sharedCtx && P.amount !== "me" && !P.base) { cook = W.cookingScales(wk, ctxFor(wk.start), cx.date, cx.slot, P.amount === "block" ? "block" : "day"); ps = { scale: cook.total, raw: cook.total, ok: true }; }
+  if (cookCtx && P.amount !== "me" && !P.base) { cook = P.amount === "block" ? cBlk : cDay; ps = { scale: cook.total, raw: cook.total, ok: true }; }
   const k = ps.scale; const t = Object.fromEntries(Object.entries(base).map(([a, v]) => [a, v * k]));
   const blocked = profileList().filter(([, p]) => (p.exclusions?.families || []).some(x => fam.includes(x)));
   const mine = (prof?.exclusions?.families || []).filter(x => fam.includes(x));
@@ -183,12 +193,12 @@ function vRecipe(m, id, cx = null) {
     <h2>${esc(r.name)}</h2>
     <div class="meta">${CATEGORY_NAMES[r.category]}${r.timeMin ? ` · ${r.timeMin} min` : ""} · ${esc(r.source)} ${(r.tags || []).map(x => `<span class="tag ${x}">${TAG_NAMES[x] || x}</span>`).join("")}</div>
     <div class="card portion">
-      ${sharedCtx ? `<div class="seg">${[["me", "Dla mnie"], ["all", "Dla wszystkich przy stole"], ...(meal.cook && W.blockDates(S.config, cx.slot, wk.start, cx.date).length > 1 ? [["block", "Na cały blok"]] : [])].map(([v, n]) =>
+      ${amtOpts.length > 1 ? `<div class="seg">${amtOpts.map(([v, n]) =>
         `<button class="${P.amount === v ? "on" : ""}" data-amt="${v}">${n}</button>`).join("")}</div>` : ""}
       ${cook ? `<div class="small">Gotujesz ${fmt(cook.rows.length)} ${cook.rows.length === 1 ? "porcję" : cook.rows.length < 5 ? "porcje" : "porcji"}${cook.dates.length > 1 ? ` na ${cook.dates.map(d => DAY_NAMES[W.dayNum(d)]).join(" + ")}` : ""}: ${cook.rows.map(r => `${esc(S.profiles[r.pid]?.name)} ×${fmt(r.scale, 2)}`).join(" · ")} = ×${fmt(cook.total, 2)} przepisu</div>` : `
       <div class="row tight">
         <select id="pProf">${profileList().map(([pid, p]) => `<option value="${pid}" ${pid === P.profile ? "selected" : ""}>${esc(p.name)}</option>`).join("")}</select>
-        <select id="pSlot">${Object.keys(prof?.slots || {}).map(sl => `<option value="${sl}" ${sl === P.slot ? "selected" : ""}>${SLOT_NAMES[sl]} · ${slotKcal(prof, sl)} kcal</option>`).join("")}</select>
+        <select id="pSlot">${slotsOf(prof).map(sl => `<option value="${sl}" ${sl === P.slot ? "selected" : ""}>${SLOT_NAMES[sl]} · ${slotKcal(prof, sl)} kcal</option>`).join("")}</select>
         <label class="chk"><input type="checkbox" id="pBase" ${P.base ? "checked" : ""}> porcja bazowa</label>
       </div>
       <div class="small ${ps.ok ? "muted" : "warntext"}">${P.base ? `Porcja bazowa przepisu: ${fmt(base.kcal)} kcal.` :
@@ -255,14 +265,17 @@ function mealLine(w, date, slot, pid) {
   const rid = m.mode === "shared" ? m.recipeId : p.recipeId;
   const kc = rid && p.scale ? Math.round(S.kcalOf[rid] * p.scale) : null;
   const lo = m.mode === "shared" ? (m.cook === false ? m.leftoverFrom : null) : (p.cook === false ? p.leftoverFrom : null);
+  const guests = m.mode === "individual" ? byOrder(Object.keys(m.per).filter(g => m.per[g].with === pid && !m.per[g].outside)) : [];
+  const tags = `${p.with ? ` <span class="badge join">razem z: ${esc(pName(p.with))}</span>` : ""}${guests.length ? ` <span class="badge join">+ ${guests.map(g => esc(pName(g))).join(", ")}</span>` : ""}${p.extra ? ` <span class="badge">dodatkowo</span>` : ""}`;
   return `${rid ? `<a href="#/przepis/${rid}/${date}/${slot}/${pid}">${esc(rName(rid))}</a>` : `<span class="warntext">${rName(null)}</span>`}
-    ${kc ? `<span class="muted small">· ${kc} kcal</span>` : ""}${lo ? ` <span class="badge">z ${DAY_NAMES[W.dayNum(lo)]}</span>` : ""}${(m.mode === "shared" ? m.locked : p.locked) ? " 🔒" : ""}
+    ${kc ? `<span class="muted small">· ${kc} kcal</span>` : ""}${lo ? ` <span class="badge">z ${DAY_NAMES[W.dayNum(lo)]}</span>` : ""}${(m.mode === "shared" ? m.locked : p.locked) ? " 🔒" : ""}${tags}
     ${rid && (S.recipes[rid]?.tags || []).includes("zelazo") ? `<span class="tag zelazo">Fe</span>` : ""}`;
 }
 
 function slotHtml(w, date, slot, only) {
-  const m = w.days[date][slot]; const parts = W.participants(m);
-  const outs = Object.entries(m.per).filter(([, p]) => p.outside);
+  const m = w.days[date][slot]; const parts = byOrder(W.participants(m));
+  const outs = byOrder(Object.keys(m.per)).filter(pid => m.per[pid].outside).map(pid => [pid, m.per[pid]]);
+  const extras = parts.filter(pid => m.per[pid].extra);
   const act = (pid = "") => `<button class="btn small dots" data-act="${date}|${slot}|${pid}" aria-label="Akcje">⋯</button>`;
   if (only) {
     if (!m.per[only]) return "";
@@ -274,12 +287,12 @@ function slotHtml(w, date, slot, only) {
     const kc = m.recipeId ? parts.map(pid => `${esc(pName(pid))} ${Math.round(S.kcalOf[m.recipeId] * (m.per[pid].scale || 0))}`).join(" · ") : "";
     return `<div class="slot shared"><div class="sh">${SLOT_NAMES[slot]} <span class="badge sh2">wspólny · ${parts.length} os.</span> ${act()}</div>
       <div class="sl">${mealLine(w, date, slot, parts[0] || Object.keys(m.per)[0])}</div>
-      <div class="small muted">${kc} kcal${m.cook === false ? "" : ""}</div>
+      <div class="small muted">${kc} kcal${extras.length ? ` · dodatkowo: ${extras.map(x => esc(pName(x))).join(", ")}` : ""}</div>
       ${outs.length ? `<div class="small muted">Poza domem: ${outs.map(([pid, p]) => esc(pName(pid)) + (p.note ? ` (${esc(p.note)})` : "")).join(", ")}</div>` : ""}
       ${lena.map(pid => `<div class="hint">Fe+ ${esc(pName(pid))}: ${esc(W.ironHints(S.profiles[pid])[0])}</div>`).join("")}</div>`;
   }
   return `<div class="slot"><div class="sh">${SLOT_NAMES[slot]} <span class="muted small">indywidualnie</span></div>
-    ${Object.keys(m.per).sort((a, b) => (S.profiles[a]?.order || 9) - (S.profiles[b]?.order || 9)).map(pid => `<div class="sl person"><b>${esc(pName(pid))}</b> ${mealLine(w, date, slot, pid)} ${act(pid)}</div>`).join("")}</div>`;
+    ${byOrder(Object.keys(m.per)).map(pid => `<div class="sl person"><b>${esc(pName(pid))}</b> ${mealLine(w, date, slot, pid)} ${act(pid)}</div>`).join("")}</div>`;
 }
 
 function vWeek(m, arg) {
@@ -310,7 +323,7 @@ function vWeek(m, arg) {
 
 function dayKcal(w, d, pid) {
   let kcal = 0; const p = S.profiles[pid];
-  for (const sl of Object.keys(p.slots)) { const m = w.days[d]?.[sl]; const e = m?.per?.[pid]; if (!e) continue;
+  for (const sl of SLOTS) { const m = w.days[d]?.[sl]; const e = m?.per?.[pid]; if (!e) continue;
     if (e.outside) { kcal += e.kcal || 0; continue; }
     const rid = m.mode === "shared" ? m.recipeId : e.recipeId; if (rid && e.scale) kcal += S.kcalOf[rid] * e.scale; }
   return { kcal: Math.round(kcal), target: p.kcalTarget };
@@ -327,21 +340,29 @@ function openActions(date, slot, pid) {
   const w = S.week.data; const m = w?.days?.[date]?.[slot]; if (!m) return;
   const shared = m.mode === "shared"; const parts = W.participants(m);
   const blk = W.blockDates(S.config, slot, w.start, date);
+  const me = !shared && pid ? m.per[pid] : null; const guest = !!me?.with;
+  const canJoin = shared ? !!m.recipeId : !!(me && !me.outside && !me.with && me.recipeId);
   const d = sheet(`<h3>${DAY_FULL[W.dayNum(date)]} ${dLabel(date)} · ${SLOT_NAMES[slot]}${shared ? " (wspólny)" : pid ? ` · ${esc(pName(pid))}` : ""}</h3>
     <div class="acts">
+      ${guest ? `<p class="small">${esc(pName(pid))} je to samo co ${esc(pName(me.with))} – danie zmienia się razem z nim.</p>
+        <button class="btn" data-a="leave">↩ Odłącz – osobne danie</button>` : `
       <button class="btn" data-a="reroll">🎲 Losuj ponownie${blk.length > 1 ? " (cały blok)" : ""}</button>
-      <button class="btn" data-a="replace">🔁 Podmień danie…</button>
+      <button class="btn" data-a="replace">🔁 Podmień danie…</button>`}
+      ${canJoin ? `<button class="btn" data-a="join">➕ Dołącz domownika${shared ? "" : ` do ${esc(pName(pid))}`}…</button>` : ""}
       ${shared ? `<button class="btn" data-a="indiv">👤 Zmień na indywidualny (tylko ten dzień)</button>` : parts.length >= 2 ? `<button class="btn" data-a="shared">👥 Zmień na wspólny (tylko ten dzień)</button>` : ""}
     </div>
     <h4>Kto je ten posiłek</h4>
-    <div class="who">${Object.entries(m.per).map(([p2, e]) => `<div class="whorow"><span><b>${esc(pName(p2))}</b>${e.fixed ? ` <span class="muted small">stały wyjątek${e.note ? `: ${esc(e.note)}` : ""}</span>` : ""}</span>
-      <button class="btn small ${e.outside ? "" : "primary"}" data-in="${p2}">${e.outside ? "poza domem → w domu" : "w domu → poza domem"}</button></div>`).join("")}</div>
+    <div class="who">${byOrder(Object.keys(m.per)).map(p2 => { const e = m.per[p2]; return `<div class="whorow"><span><b>${esc(pName(p2))}</b>${e.fixed ? ` <span class="muted small">stały wyjątek${e.note ? `: ${esc(e.note)}` : ""}</span>` : ""}${e.extra ? ` <span class="muted small">dodatkowo</span>` : ""}${e.with ? ` <span class="muted small">razem z: ${esc(pName(e.with))}</span>` : ""}</span>
+      ${e.extra ? `<button class="btn small" data-leave="${p2}">nie je – usuń</button>` : `<button class="btn small ${e.outside ? "" : "primary"}" data-in="${p2}">${e.outside ? "poza domem → w domu" : "w domu → poza domem"}</button>`}</div>`; }).join("")}</div>
     <div class="row"><button class="btn" id="shClose">Zamknij</button></div>`);
   d.querySelector("#shClose").onclick = closeSheet;
   const ctx = ctxFor(w.start);
   const run = async (fn, msg) => { const w2 = structuredClone(S.week.data); const r = fn(w2); closeSheet(); await saveSlot(w2, slot); route(); if (r?.warning) toast(r.warning, "err"); else if (msg) toast(msg, "ok"); };
-  d.querySelector('[data-a="reroll"]').onclick = () => run(w2 => { W.reroll(w2, ctx, date, slot, shared ? null : pid); }, "Wylosowano");
-  d.querySelector('[data-a="replace"]').onclick = () => openReplace(date, slot, shared ? null : pid);
+  d.querySelector('[data-a="reroll"]')?.addEventListener("click", () => run(w2 => { W.reroll(w2, ctx, date, slot, shared ? null : pid); }, "Wylosowano"));
+  d.querySelector('[data-a="replace"]')?.addEventListener("click", () => openReplace(date, slot, shared ? null : pid));
+  d.querySelector('[data-a="leave"]')?.addEventListener("click", () => run(w2 => { W.leaveMeal(w2, ctx, date, slot, pid); }, "Odłączono – wylosowano osobne danie"));
+  d.querySelector('[data-a="join"]')?.addEventListener("click", () => openJoin(date, slot, shared ? null : pid));
+  d.querySelectorAll("[data-leave]").forEach(b => b.onclick = () => run(w2 => { W.leaveMeal(w2, ctx, date, slot, b.dataset.leave); }, "Usunięto z posiłku"));
   d.querySelector('[data-a="indiv"]')?.addEventListener("click", () => run(w2 => { W.setMode(w2, ctx, date, slot, "individual"); }, "Posiłek indywidualny"));
   d.querySelector('[data-a="shared"]')?.addEventListener("click", () => run(w2 => { W.setMode(w2, ctx, date, slot, "shared"); }, "Posiłek wspólny"));
   d.querySelectorAll("[data-in]").forEach(b => b.onclick = () => {
@@ -350,6 +371,21 @@ function openActions(date, slot, pid) {
     if (goingOut) { const v = prompt(`${pName(p2)} je poza domem. Orientacyjne kcal (opcjonalnie):`, ""); if (v === null) return; kc = Math.round(+v) || null; }
     run(w2 => W.setOutside(w2, ctx, date, slot, p2, goingOut, kc), goingOut ? "Zapisano: poza domem" : "Zapisano: w domu");
   });
+}
+function openJoin(date, slot, host) {
+  const w = S.week.data; const ctx = ctxFor(w.start); const m = w.days[date][slot];
+  const rid = W.recipeOf(m, host);
+  const opts = W.joinOptions(w, ctx, date, slot, host).sort((a, b) => (S.profiles[a.pid]?.order || 9) - (S.profiles[b.pid]?.order || 9));
+  const d = sheet(`<h3>Dołącz do: ${esc(rName(rid))}</h3>
+    <p class="muted small">${DAY_FULL[W.dayNum(date)]} ${dLabel(date)} · ${SLOT_NAMES[slot]}${host ? ` · gospodarz: ${esc(pName(host))}` : " (wspólny)"}. Dołączona osoba je to samo danie w swojej porcji; ilości „dla wszystkich przy stole” uwzględnią ją w przepisie.</p>
+    <div class="who">${opts.map(o => `<div class="whorow"><span><b>${esc(pName(o.pid))}</b> <span class="muted small">${o.extra ? "nie ma tego posiłku w układzie – porcja bazowa, poza bilansem" : o.outside ? "teraz poza domem" : "zamiast swojego dania"}</span>
+      ${o.bad.length ? `<br><span class="warntext small">wyklucza: ${o.bad.map(f => FAMILY_NAMES[f] || f).join(", ")}</span>` : ""}</span>
+      <button class="btn small primary" data-j="${o.pid}" ${o.bad.length ? "disabled" : ""}>Dołącz</button></div>`).join("") || `<p class="muted">Wszyscy już jedzą ten posiłek.</p>`}</div>
+    <div class="row"><button class="btn" id="shClose">Anuluj</button></div>`);
+  d.querySelector("#shClose").onclick = closeSheet;
+  d.querySelectorAll("[data-j]").forEach(b => b.onclick = async () => {
+    const w2 = structuredClone(S.week.data); W.joinMeal(w2, ctx, date, slot, host, b.dataset.j);
+    closeSheet(); await saveSlot(w2, slot); route(); toast(`${pName(b.dataset.j)} dołącza`, "ok"); });
 }
 function openReplace(date, slot, pid) {
   const w = S.week.data; const ctx = ctxFor(w.start);
@@ -380,10 +416,10 @@ function vToday(m) {
   const sum = dayKcal(w, today, pid);
   m.innerHTML = `<h2>Dziś · ${DAY_FULL[W.dayNum(today)]} ${dLabel(today)}</h2>
     <div class="row tight">${sel}<span class="muted">${sum.kcal} / ${sum.target} kcal</span></div>
-    <div class="todaylist">${Object.keys(p.slots).filter(sl => w.days[today]?.[sl]?.per?.[pid]).map(sl => { const mm = w.days[today][sl]; const e = mm.per[pid];
+    <div class="todaylist">${SLOTS.filter(sl => w.days[today]?.[sl]?.per?.[pid]).map(sl => { const mm = w.days[today][sl]; const e = mm.per[pid];
       return `<div class="card tslot"><div class="sh">${SLOT_NAMES[sl]}${mm.mode === "shared" ? ` <span class="badge sh2">wspólny</span>` : ""}</div>
         <div class="sl">${mealLine(w, today, sl, pid)}</div>
-        <div class="row tight"><button class="btn small" data-out="${sl}">${e.outside ? "Jednak w domu" : "Jem poza domem"}</button>
+        <div class="row tight">${e.extra ? "" : `<button class="btn small" data-out="${sl}">${e.outside ? "Jednak w domu" : "Jem poza domem"}</button>`}
         <button class="btn small" data-act="${today}|${sl}|${mm.mode === "shared" ? "" : pid}">⋯ więcej</button></div></div>`; }).join("")}</div>
     <p><a href="#/tydzien">Cały tydzień →</a></p>`;
   $("#tProf").onchange = (e) => { S.todayProfile = e.target.value; route(); };
@@ -450,7 +486,7 @@ function vMore(m) {
       <button class="btn" id="logout">Wyloguj</button></div>
     <div class="card"><h3>Profile rodziny</h3>
       <div class="profiles">${profileList().map(([id, p]) => `<div class="prof">${canEdit(id) ? `<a class="btn small edit" href="#/profil/${id}">Edytuj</a>` : ""}<div><b>${esc(p.name)}</b>${p.flags?.ironRich ? ` <span class="tag zelazo">Fe+</span>` : ""}${p.uid ? "" : ` <span class="muted small">(bez konta)</span>`} · ${p.kcalTarget} kcal</div>
-        <div class="small">${Object.entries(p.slots).map(([s, v]) => `${SLOT_NAMES[s]} ${v}%`).join(" · ")}</div>
+        <div class="small">${slotsOf(p).map(s => `${SLOT_NAMES[s]} ${p.slots[s]}%`).join(" · ")}</div>
         ${(p.fixedExceptions || []).length ? `<div class="small muted">Poza domem: ${p.fixedExceptions.map(e => `${e.days.map(d => DAY_NAMES[d]).join(", ")} – ${e.slots.map(s => SLOT_NAMES[s]).join(", ")}`).join("; ")}</div>` : ""}
         ${(p.exclusions?.families || []).length ? `<div class="small muted">Wyklucza: ${p.exclusions.families.map(x => FAMILY_NAMES[x] || x).join(", ")}</div>` : ""}</div>`).join("")}</div></div>
     ${isAdmin() ? rulesHtml() + adminHtml() : ""}
@@ -485,7 +521,7 @@ function vProfile(m, pid) {
           <button class="btn small" data-delexc="${i}">Usuń</button></div>`).join("") : `<p class="muted small">Brak.</p>`}
         <details class="add"><summary>Dodaj wyjątek</summary>
           <div class="small muted">Dni:</div><div class="row tight">${[6, 7, 1, 2, 3, 4, 5].map(x => `<label class="chk"><input type="checkbox" data-eday="${x}"> ${DAY_NAMES[x]}</label>`).join("")}</div>
-          <div class="small muted">Posiłki:</div><div class="row tight">${Object.keys(d.slots).map(sl => `<label class="chk"><input type="checkbox" data-eslot="${sl}"> ${SLOT_NAMES[sl]}</label>`).join("")}</div>
+          <div class="small muted">Posiłki:</div><div class="row tight">${slotsOf(d).map(sl => `<label class="chk"><input type="checkbox" data-eslot="${sl}"> ${SLOT_NAMES[sl]}</label>`).join("")}</div>
           <div class="row tight"><input id="enote" placeholder="opis, np. szkoła" style="flex:1 1 160px"><input id="ekcal" type="number" placeholder="kcal (opcjonalnie)" style="width:170px"><button class="btn" id="eadd">Dodaj</button></div>
         </details></div>
       <div class="card"><h3>Wykluczenia</h3><div class="row tight">

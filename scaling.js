@@ -1,4 +1,6 @@
-// scaling.js – v0.2.0 – kcal posiłku osoby i skala porcji przepisu
+// scaling.js – v0.2.1 – kcal posiłku osoby i skala porcji przepisu
+import { SLOTS } from "./defaults.js";
+
 export function slotKcal(profile, slot) {
   const pct = profile?.slots?.[slot];
   return pct ? Math.round(profile.kcalTarget * pct / 100) : null;
@@ -17,7 +19,7 @@ export function defaultSlotFor(category, profile) {
   const has = (s) => profile?.slots?.[s];
   const prefs = { sniadanie: ["sniadanie"], ii_sniadanie: ["ii_sniadanie", "przekaska"], przekaska: ["przekaska", "ii_sniadanie"],
     obiad: ["obiad"], kolacja: ["kolacja"], deser: ["przekaska", "ii_sniadanie"] }[category] || [];
-  return prefs.find(has) || Object.keys(profile?.slots || {})[0] || null;
+  return prefs.find(has) || SLOTS.find(has) || null;
 }
 
 // Walidacja układu posiłków: co najmniej 1 posiłek, procenty całkowite > 0, suma 100

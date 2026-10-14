@@ -1,4 +1,4 @@
-// week.js – v0.3.0 – tydzień planu (sobota–piątek), generator i operacje na posiłkach (bez zależności od Firebase)
+// week.js – v0.3.1 – tydzień planu (sobota–piątek), generator i operacje na posiłkach (bez zależności od Firebase)
 import { SLOTS } from "./defaults.js";
 import { slotKcal } from "./scaling.js";
 
@@ -40,6 +40,8 @@ export function fixedException(profile, dn, slot) {
 }
 
 export const participants = (meal) => Object.entries(meal?.per || {}).filter(([, p]) => !p.outside).map(([pid]) => pid);
+// Przepis, który je dana osoba w posiłku
+export const recipeOf = (meal, pid) => meal?.mode === "shared" ? meal.recipeId : meal?.per?.[pid]?.recipeId;
 
 // ---------- kontekst ----------
 // ctx = { sat, profiles, config, recipes, kcalOf: {rid: kcal}, history: [{date, slot, recipeId, pids}], rng }
@@ -69,7 +71,7 @@ export function candidates(ctx, unit, { noRepeat = true, limits = null, exclude 
     if (!pool.includes(r.category) || (r.status && r.status !== "aktywny") || exclude.includes(rid)) continue;
     if ([...ctx.famOf[rid]].some(f => banned.has(f))) continue;
     const k = ctx.kcalOf[rid]; if (!k) continue;
-    const ok = unit.pids.every(pid => { const t = slotKcal(ctx.profiles[pid], unit.slot); const s = t / k; return s >= lim.min && s <= lim.max; });
+    const ok = unit.pids.every(pid => { const t = slotKcal(ctx.profiles[pid], unit.slot); if (!t) return true; const s = t / k; return s >= lim.min && s <= lim.max; });
     if (!ok) continue;
     if (noRepeat && ctx.history.some(h => h.slot === unit.slot && h.recipeId === rid && h.pids.some(p => unit.pids.includes(p))
         && unit.days.some(d => Math.abs(daysBetween(h.date, d)) < (ctx.config.weekRules?.noRepeatDays || 7)))) continue;
@@ -99,7 +101,12 @@ function skeleton(ctx, date, slot, old) {
     const fx = fixedException(p, dn, slot); const o = old?.per?.[pid];
     const e = { outside: !!fx, fixed: !!fx, kcal: fx?.kcal ?? null, note: fx?.note || "" };
     if (o?.manual) Object.assign(e, { outside: o.outside, kcal: o.kcal ?? null, manual: true, fixedOff: !!o.fixedOff });
+    if (o?.with && !e.outside) e.with = o.with;
     per[pid] = e;
+  }
+  // osoby dołączone dodatkowo (nie mają tego posiłku w swoim układzie)
+  for (const [pid, o] of Object.entries(old?.per || {})) if (o.extra && !per[pid] && ctx.profiles[pid]) {
+    per[pid] = { outside: false, fixed: false, kcal: null, note: "", extra: true, manual: true }; if (o.with) per[pid].with = o.with;
   }
   const meal = { per };
   const n = participants(meal).length;
@@ -132,7 +139,7 @@ export function generateWeek(ctx, existing) {
     }
     const pids = [...new Set(bd.flatMap(d => days[d][sl].mode === "individual" ? participants(days[d][sl]) : []))];
     for (const pid of pids) {
-      const pd = bd.filter(d => days[d][sl].mode === "individual" && !days[d][sl].per[pid]?.outside && !days[d][sl].per[pid]?.locked);
+      const pd = bd.filter(d => days[d][sl].mode === "individual" && !days[d][sl].per[pid]?.outside && !days[d][sl].per[pid]?.locked && !days[d][sl].per[pid]?.with);
       if (!pd.length) continue;
       const unit = { slot: sl, days: pd, pids: [pid] }; const rid = pickRecipe(ctx, unit); remember(ctx, unit, rid);
       for (const d of pd) days[d][sl].per[pid].recipeId = rid;
@@ -154,9 +161,15 @@ export function normalize(ctx, week, slot) {
     if (m.mode === "shared") {
       m.cook = !(pm && pm.mode === "shared" && pm.recipeId && pm.recipeId === m.recipeId);
       m.leftoverFrom = m.cook ? null : (pm.leftoverFrom || prevInBlock);
-      for (const [pid, p] of Object.entries(m.per)) { delete p.recipeId; delete p.cook; delete p.leftoverFrom; p.scale = !p.outside && m.recipeId ? scaleOf(ctx, pid, slot, m.recipeId) : null; }
+      for (const [pid, p] of Object.entries(m.per)) { delete p.recipeId; delete p.cook; delete p.leftoverFrom; delete p.with; p.scale = !p.outside && m.recipeId ? scaleOf(ctx, pid, slot, m.recipeId) : null; }
     } else {
       delete m.recipeId; m.cook = null; m.leftoverFrom = null; m.locked = false;
+      // dołączeni domownicy jedzą to samo co gospodarz posiłku
+      for (const [pid, p] of Object.entries(m.per)) if (p.with) {
+        const h = m.per[p.with];
+        if (!h || h.outside || h.with || !h.recipeId || p.outside) delete p.with;
+        else { p.recipeId = h.recipeId; p.locked = false; }
+      }
       for (const [pid, p] of Object.entries(m.per)) {
         if (p.outside) { p.scale = null; continue; }
         const pp = pm?.per?.[pid]; const prevRid = pm ? (pm.mode === "shared" ? pm.recipeId : pp?.recipeId) : null;
@@ -231,6 +244,7 @@ export function setMode(week, ctx, date, slot, mode) {
 // Poza domem / powrót (także wyłączenie stałego wyjątku). Zwraca { dates, warning }
 export function setOutside(week, ctx, date, slot, pid, outside, kcal = null) {
   const m = week.days[date][slot]; const p = m.per[pid]; let warning = null;
+  if (outside) delete p.with;
   p.outside = outside; p.manual = true; p.kcal = outside ? (kcal || null) : null; p.fixedOff = !outside && p.fixed;
   if (!outside) {
     if (m.mode === "shared" && m.recipeId && [...ctx.famOf[m.recipeId]].some(f => (ctx.profiles[pid].exclusions?.families || []).includes(f)))
@@ -243,12 +257,56 @@ export function setOutside(week, ctx, date, slot, pid, outside, kcal = null) {
   normalize(ctx, week, slot); return { dates: blockDates(ctx.config, slot, week.start, date), warning };
 }
 
-// Ilości do gotowania: suma skal osób (dla dnia lub całego bloku od dnia „gotuj”)
-export function cookingScales(week, ctx, date, slot, scope) {
-  const m = week.days[date][slot]; const rows = [];
-  const dates = scope === "block" ? weekDates(week.start).filter(d => { const x = week.days[d]?.[slot];
-    return x && x.mode === "shared" && x.recipeId === m.recipeId && (d === date || x.leftoverFrom === (m.leftoverFrom || date)); }) : [date];
-  for (const d of dates) for (const pid of participants(week.days[d][slot])) rows.push({ date: d, pid, scale: week.days[d][slot].per[pid].scale || 0 });
+// Dołączenie domownika do posiłku (indywidualny: je to samo co gospodarz; wspólny: dodatkowy uczestnik)
+export function joinOptions(week, ctx, date, slot, hostPid = null) {
+  const m = week.days[date][slot]; const rid = recipeOf(m, hostPid);
+  const out = [];
+  for (const pid of Object.keys(ctx.profiles)) {
+    const e = m.per[pid];
+    if (m.mode === "shared") { if (e) continue; }
+    else { if (pid === hostPid || (e && !e.outside && e.with === hostPid)) continue; }
+    const bad = rid ? [...(ctx.famOf[rid] || [])].filter(f => (ctx.profiles[pid].exclusions?.families || []).includes(f)) : [];
+    out.push({ pid, extra: !e, outside: !!e?.outside, bad });
+  }
+  return out;
+}
+export function joinMeal(week, ctx, date, slot, hostPid, guestPid) {
+  const m = week.days[date][slot]; let g = m.per[guestPid];
+  if (!g) g = m.per[guestPid] = { outside: false, fixed: false, kcal: null, note: "", extra: true, manual: true };
+  else if (g.outside) { g.outside = false; g.manual = true; g.kcal = null; g.fixedOff = !!g.fixed; }
+  if (m.mode === "individual" && hostPid) {
+    g.with = hostPid; g.locked = false;
+    for (const p of Object.values(m.per)) if (p.with === guestPid) p.with = hostPid; // bez łańcuchów
+  }
+  normalize(ctx, week, slot); return [date];
+}
+export function leaveMeal(week, ctx, date, slot, pid) {
+  const m = week.days[date][slot]; const p = m.per[pid]; if (!p) return [date];
+  for (const [o, x] of Object.entries(m.per)) if (x.with === pid) delete x.with; // goście gospodarza zostają przy daniu
+  if (p.extra) delete m.per[pid];
+  else if (p.with) {
+    delete p.with;
+    if (m.mode === "individual") { const unit = { slot, days: [date], pids: [pid] };
+      p.recipeId = pickRecipe({ ...ctx, history: [...ctx.history, ...historyExcept(week, unit)] }, unit, p.recipeId ? [p.recipeId] : []) || p.recipeId; }
+  }
+  normalize(ctx, week, slot); return [date];
+}
+
+// Ilości do gotowania: suma skal osób jedzących to samo danie (dzień lub dni z resztkami w bloku)
+export function cookingScales(week, ctx, date, slot, scope, pid = null) {
+  const m = week.days[date][slot]; const rid = recipeOf(m, pid) ?? m.recipeId; const rows = [];
+  const eaters = (x) => participants(x).filter(p => recipeOf(x, p) === rid);
+  const isLeft = (x, p) => x.mode === "shared" ? x.cook === false : x.per[p].cook === false;
+  let dates = [date];
+  if (scope === "block") {
+    dates = [];
+    for (const d of blockDates(ctx.config, slot, week.start, date).filter(d => d >= date)) {
+      const x = week.days[d]?.[slot]; const e = x ? eaters(x) : [];
+      if (!e.length || (d !== date && !e.some(p => isLeft(x, p)))) break;
+      dates.push(d);
+    }
+  }
+  for (const d of dates) for (const p of eaters(week.days[d][slot])) rows.push({ date: d, pid: p, scale: week.days[d][slot].per[p].scale || 0 });
   return { rows, total: rows.reduce((a, b) => a + b.scale, 0), dates };
 }
 
