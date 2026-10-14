@@ -1,4 +1,4 @@
-/* styles.css – Dieta dla Rodziny – v0.3.1 */
+/* styles.css – Dieta dla Rodziny – v0.4.0 */
 :root{
   --bg:#F6F3EC; --card:#FFFFFF; --ink:#1F2A26; --muted:#6B756F; --line:#E3DED3;
   --brand:#2F5D50; --brand-ink:#FFFFFF; --accent:#E07A3F; --fe:#8E2C2C; --ok:#2E7D4F; --err:#B3261E;
@@ -117,3 +117,23 @@ details.add summary{cursor:pointer;color:var(--brand);font-weight:600;padding:6p
 .tslot .sh{font-size:.8rem;font-weight:700;color:var(--muted);text-transform:uppercase}
 .badge.join { background: #e6f0ff; color: #1d4f91; }
 @media (prefers-color-scheme: dark) { .badge.join { background: #1f3550; color: #cfe1ff; } }
+/* M4 – listy zakupów */
+.listcard{display:flex;flex-direction:column;gap:2px;text-decoration:none;color:var(--ink)}
+.btn.danger{color:var(--err);border-color:var(--err)}
+.progress{height:8px;border-radius:4px;background:var(--line);overflow:hidden;margin:10px 0 4px}
+.progress div{height:100%;background:var(--ok);transition:width .2s}
+.shopbar{flex-wrap:nowrap} .shopbar .btn.primary{flex:1 1 auto} .shopbar .btn{padding:0 12px;white-space:nowrap}
+.addrow{display:grid;grid-template-columns:5.5em 1fr auto;gap:8px} .addrow #lsTxt{grid-column:1/-1;width:100%} .addrow select{min-width:0;width:100%}
+.aisle{padding:10px 12px} .aisle h3{font-size:.8rem;text-transform:uppercase;letter-spacing:.04em;color:var(--muted);margin:2px 4px 4px}
+.sitem{display:flex;align-items:flex-start;gap:8px;padding:6px 0;border-top:1px solid var(--line)}
+.aisle .sitem:first-of-type{border-top:0}
+.sitem .ck{flex:0 0 44px;height:44px;font-size:1.6rem;line-height:1;border:0;background:none;color:var(--brand);cursor:pointer;padding:0}
+.sitem .nm{flex:1;min-width:0;padding-top:10px;cursor:pointer}
+.sitem .amt{color:var(--muted);font-size:.9rem}
+.sitem .src{margin-top:4px}
+.sitem .ib{flex:0 0 40px;height:40px;border:0;background:none;font-size:1.1rem;cursor:pointer;opacity:.55;margin-top:2px}
+.sitem.done .nm b{text-decoration:line-through;color:var(--muted)}
+.sitem.done{opacity:.7}
+.sitem.gone .nm b{color:var(--muted)}
+details.card summary{cursor:pointer;font-weight:600}
+textarea{font:inherit;font-size:.9rem;border-radius:10px;border:1px solid var(--line);background:var(--card);color:var(--ink);padding:8px}

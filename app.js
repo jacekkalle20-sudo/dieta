@@ -1,4 +1,4 @@
-// app.js – Dieta dla Rodziny – v0.3.1 (M3: plan tygodnia, generator, Dziś, reguły tygodnia, dołączanie do posiłku)
+// app.js – Dieta dla Rodziny – v0.4.0 (M4: listy zakupów; M3: plan tygodnia, generator, Dziś, reguły, dołączanie do posiłku)
 import { APP_VERSION, APP_STAGE } from "./version.js";
 import { OWNER_EMAIL } from "./config.js";
 import { defaultConfig, defaultProfiles, CATEGORY_NAMES, TAG_NAMES, FAMILY_NAMES, SLOT_NAMES, DAY_NAMES, productChunkOf, recipeChunkOf } from "./defaults.js";
@@ -7,13 +7,16 @@ import { recipeTotals, recipeFamilies, formatAmount } from "./nutrition.js";
 import { slotKcal, portionScale, defaultSlotFor, validateSlots } from "./scaling.js";
 import { SLOTS } from "./defaults.js";
 import * as W from "./week.js";
+import * as SH from "./shopping.js";
+import { AISLES } from "./defaults.js";
 
 const demo = new URLSearchParams(location.search).has("demo");
 const { createBackend } = await import(demo ? "./backend-demo.js" : "./backend-firebase.js");
 const be = createBackend();
 
 const S = { user: null, config: null, profiles: {}, products: {}, recipes: {}, invite: null, filters: { q: "", cat: "", tag: "", profile: "" }, portion: { profile: "", slot: "", base: false, recipe: "", amount: "me" },
-  week: { sat: null, data: undefined, unsub: null }, weekSel: null, weekProfile: "", todayProfile: "" };
+  week: { sat: null, data: undefined, unsub: null }, weekSel: null, weekProfile: "", todayProfile: "",
+  shop: { lists: undefined, unsubL: null, listId: null, items: undefined, unsubI: null, showDone: true, showStaples: false, open: {} } };
 const $ = (sel) => document.querySelector(sel);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const isAdmin = () => S.invite?.role === "admin";
@@ -111,7 +114,7 @@ function route() {
   document.querySelectorAll(".nav a").forEach(a => a.classList.toggle("on", a.dataset.k === ({ przepis: "przepisy", profil: "wiecej" }[view] || view)));
   const m = $("#main"); if (!m) return;
   closeSheet();
-  ({ dzis: () => vToday(m), tydzien: () => vWeek(m, arg), zakupy: () => vSoon(m, "Lista zakupów", "M4"),
+  ({ dzis: () => vToday(m), tydzien: () => vWeek(m, arg), zakupy: () => arg ? vShopList(m, arg) : vShopping(m),
      przepisy: () => vRecipes(m), przepis: () => vRecipe(m, arg, a2 ? { date: a2, slot: a3, pid: a4 || "" } : null), profil: () => vProfile(m, arg), wiecej: () => vMore(m) }[view] || (() => vRecipes(m)))();
   window.scrollTo(0, 0);
 }
@@ -177,6 +180,9 @@ function vRecipe(m, id, cx = null) {
   const cBlk = cookCtx ? W.cookingScales(wk, ctxW, cx.date, cx.slot, "block", cx.pid) : null;
   const amtOpts = cookCtx ? [["me", "Dla mnie"], ...(cDay.rows.length > 1 ? [["all", "Dla wszystkich przy stole"]] : []), ...(cBlk.dates.length > 1 ? [["block", "Na cały blok"]] : [])] : [];
   if (!amtOpts.some(([v]) => v === P.amount)) P.amount = "me";
+  // gospodarz posiłku do „Dołącz domownika”: wspólny – brak; indywidualny – osoba lub ta, do której dołączyła
+  const joinHost = cookCtx && meal.mode !== "shared" ? (meal.per[cx.pid]?.with || cx.pid) : null;
+  const canJoin = cookCtx && (meal.mode === "shared" || (joinHost && !meal.per[joinHost]?.outside)) && W.joinOptions(wk, ctxW, cx.date, cx.slot, joinHost).length > 0;
   if (!P.profile || !S.profiles[P.profile]) P.profile = S.invite.profileId || profileList()[0]?.[0];
   const prof = S.profiles[P.profile];
   if (!P.slot || !prof?.slots?.[P.slot]) P.slot = defaultSlotFor(r.category, prof);
@@ -195,6 +201,7 @@ function vRecipe(m, id, cx = null) {
     <div class="card portion">
       ${amtOpts.length > 1 ? `<div class="seg">${amtOpts.map(([v, n]) =>
         `<button class="${P.amount === v ? "on" : ""}" data-amt="${v}">${n}</button>`).join("")}</div>` : ""}
+      ${canJoin ? `<div class="row tight"><button class="btn small" id="pJoin">➕ Dołącz domownika</button>${cDay.rows.length > 1 ? `<span class="muted small">Przy stole: ${cDay.rows.map(r => esc(S.profiles[r.pid]?.name)).join(", ")}</span>` : ""}</div>` : ""}
       ${cook ? `<div class="small">Gotujesz ${fmt(cook.rows.length)} ${cook.rows.length === 1 ? "porcję" : cook.rows.length < 5 ? "porcje" : "porcji"}${cook.dates.length > 1 ? ` na ${cook.dates.map(d => DAY_NAMES[W.dayNum(d)]).join(" + ")}` : ""}: ${cook.rows.map(r => `${esc(S.profiles[r.pid]?.name)} ×${fmt(r.scale, 2)}`).join(" · ")} = ×${fmt(cook.total, 2)} przepisu</div>` : `
       <div class="row tight">
         <select id="pProf">${profileList().map(([pid, p]) => `<option value="${pid}" ${pid === P.profile ? "selected" : ""}>${esc(p.name)}</option>`).join("")}</select>
@@ -213,6 +220,7 @@ function vRecipe(m, id, cx = null) {
     <p class="muted small">Porcja bazowa ${fmt(base.kcal)} kcal (wyliczone z gramatur; źródło podawało ${r.sourceKcal ?? "–"} kcal). Id: ${id}, wersja ${r.rev}.</p>`;
   const again = () => vRecipe(m, id, cx);
   m.querySelectorAll("[data-amt]").forEach(b => b.onclick = () => { P.amount = b.dataset.amt; again(); });
+  if ($("#pJoin")) $("#pJoin").onclick = () => { P.amount = "all"; openJoin(cx.date, cx.slot, joinHost); };
   if ($("#pProf")) {
     $("#pProf").onchange = (e) => { P.profile = e.target.value; P.slot = ""; again(); };
     $("#pSlot").onchange = (e) => { P.slot = e.target.value; again(); };
@@ -430,6 +438,187 @@ function vToday(m) {
     const w2 = structuredClone(S.week.data); const r = W.setOutside(w2, ctxFor(sat), today, sl, pid, goingOut, kc);
     await saveSlot(w2, sl); route(); if (r.warning) toast(r.warning, "err");
   });
+}
+
+// ---------- listy zakupów (M4) ----------
+const SLOT_SHORT = { sniadanie: "śn", ii_sniadanie: "II śn", obiad: "obiad", przekaska: "przek", kolacja: "kol" };
+function ensureLists() {
+  if (S.shop.unsubL) return;
+  S.shop.unsubL = be.watchLists((d) => { S.shop.lists = d; rerenderShop(); }, (e) => toast("Błąd synchronizacji list: " + (e.code || e.message), "err"));
+}
+function ensureItems(id) {
+  if (S.shop.listId === id) return;
+  if (S.shop.unsubI) S.shop.unsubI();
+  S.shop.listId = id; S.shop.items = undefined;
+  S.shop.unsubI = be.watchItems(id, (d) => { if (S.shop.listId !== id) return; S.shop.items = d; rerenderShop(); },
+    (e) => toast("Błąd synchronizacji listy: " + (e.code || e.message), "err"));
+}
+// Odświeżenie bez przewijania do góry (zmiany z innych telefonów, odhaczanie)
+function rerenderShop() {
+  const [, view, arg] = (location.hash || "").split("/"); const m = $("#main");
+  if (view !== "zakupy" || !m || $("#sheet")) return;
+  const y = scrollY; arg ? vShopList(m, arg) : vShopping(m); scrollTo(0, y);
+}
+const bg = (p) => p.catch(e => toast("Błąd zapisu: " + (e.code || e.message), "err")); // zapis w tle (działa offline)
+const rangeTxt = (l) => l.range ? `${DAY_NAMES[W.dayNum(l.range.from)]} ${dLabel(l.range.from)} – ${DAY_NAMES[W.dayNum(l.range.to)]} ${dLabel(l.range.to)}` : "lista ręczna";
+const slotsTxt = (l) => !l.range ? "własne pozycje" : !l.slots || l.slots.length === SLOTS.length ? "wszystkie posiłki" : l.slots.map(x => SLOT_NAMES[x]).join(", ");
+async function weeksFor(from, to) {
+  const out = {};
+  for (const sat of SH.saturdaysIn(from, to)) out[sat] = S.week.sat === sat && S.week.data !== undefined ? S.week.data : await be.getWeek(sat).catch(() => null);
+  return out;
+}
+
+function vShopping(m) {
+  ensureLists(); const L = S.shop.lists;
+  if (L === undefined) { m.innerHTML = `<h2>Zakupy</h2><div class="card muted">Wczytywanie…</div>`; return; }
+  const arr = Object.entries(L).sort((a, b) => (b[1].createdAt || "").localeCompare(a[1].createdAt || ""));
+  const act = arr.filter(([, l]) => l.status !== "zamknieta"), closed = arr.filter(([, l]) => l.status === "zamknieta");
+  const card = ([id, l]) => `<a class="card listcard" href="#/zakupy/${id}"><b>${esc(l.name)}</b>
+    <span class="muted small">${rangeTxt(l)} · ${slotsTxt(l)}</span><span class="muted small">utworzył(a): ${esc(l.createdByName || l.createdBy || "")}</span></a>`;
+  m.innerHTML = `<h2>Zakupy</h2>
+    <div class="row tight"><button class="btn primary" id="newList">+ Nowa lista z planu</button><button class="btn" id="newEmpty">+ Pusta lista</button></div>
+    ${act.length ? act.map(card).join("") : `<div class="card muted">Brak aktywnych list. Utwórz listę z planu tygodnia.</div>`}
+    ${closed.length ? `<details class="card"><summary>Zamknięte (${closed.length})</summary>${closed.map(card).join("")}</details>` : ""}`;
+  $("#newList").onclick = () => openNewList();
+  $("#newEmpty").onclick = async () => {
+    const name = prompt("Nazwa listy:", "Dokupić"); if (!name) return;
+    const id = be.newListId();
+    bg(be.createList(id, { name: name.trim(), createdAt: new Date().toISOString(), createdBy: S.user.email, createdByName: S.user.name || S.user.email, range: null, slots: null, status: "aktywna" }, {}));
+    location.hash = `#/zakupy/${id}`;
+  };
+}
+
+function openNewList() {
+  const today = todayYmd(); const sat = W.saturdayOf(today);
+  const presets = { tw: [sat, W.addDays(sat, 6), "Ten tydzień"], dz: [today, W.addDays(sat, 6), "Od dziś do pt"], nt: [W.addDays(sat, 7), W.addDays(sat, 13), "Następny tydzień"] };
+  const st = { from: today === sat ? sat : today, to: W.addDays(sat, 6), slots: [...SLOTS] };
+  const d = sheet(`<h3>Nowa lista z planu</h3>
+    <div class="row tight">${Object.entries(presets).map(([k, [, , n]]) => `<button class="btn small" data-pr="${k}">${n}</button>`).join("")}</div>
+    <div class="row tight"><label>Od <input type="date" id="nlFrom"></label><label>Do <input type="date" id="nlTo"></label></div>
+    <div class="small muted">Posiłki:</div><div class="row tight">${SLOTS.map(sl => `<label class="chk"><input type="checkbox" data-nls="${sl}" checked> ${SLOT_NAMES[sl]}</label>`).join("")}</div>
+    <label class="small">Nazwa <input id="nlName" style="width:100%"></label>
+    <div id="nlInfo" class="small muted"></div>
+    <div class="row"><button class="btn primary" id="nlGo">Utwórz listę</button><button class="btn" id="shClose">Anuluj</button></div>`);
+  const sync = () => { d.querySelector("#nlFrom").value = st.from; d.querySelector("#nlTo").value = st.to;
+    d.querySelector("#nlName").value = `Zakupy ${dLabel(st.from)}–${dLabel(st.to)}`;
+    d.querySelector("#nlInfo").textContent = `${W.daysBetween(st.from, st.to) + 1} dni. Posiłki ugotowane przed pierwszym dniem („z wczoraj”) są pomijane.`; };
+  sync();
+  d.querySelectorAll("[data-pr]").forEach(b => b.onclick = () => { [st.from, st.to] = presets[b.dataset.pr]; sync(); });
+  d.querySelector("#nlFrom").onchange = (e) => { st.from = e.target.value; if (st.to < st.from) st.to = st.from; sync(); };
+  d.querySelector("#nlTo").onchange = (e) => { st.to = e.target.value; if (st.to < st.from) st.from = st.to; sync(); };
+  d.querySelectorAll("[data-nls]").forEach(c => c.onchange = () => { st.slots = SLOTS.filter(sl => d.querySelector(`[data-nls="${sl}"]`).checked); });
+  d.querySelector("#shClose").onclick = closeSheet;
+  d.querySelector("#nlGo").onclick = async () => {
+    if (!st.slots.length) return toast("Zaznacz co najmniej jeden posiłek", "err");
+    if (W.daysBetween(st.from, st.to) > 20) return toast("Zakres najwyżej 3 tygodnie", "err");
+    d.querySelector("#nlGo").disabled = true;
+    const weeks = await weeksFor(st.from, st.to);
+    const { need, missing } = SH.computeNeeds(weeks, S.recipes, st);
+    const items = SH.buildItems(need, S.products);
+    if (!Object.keys(items).length) { d.querySelector("#nlGo").disabled = false; return toast(missing.length ? "Brak planu na wybrane dni – najpierw wygeneruj tydzień" : "Nic do kupienia w tym zakresie", "err"); }
+    const id = be.newListId(); const now = new Date().toISOString();
+    bg(be.createList(id, { name: d.querySelector("#nlName").value.trim() || "Zakupy", createdAt: now, createdBy: S.user.email, createdByName: S.user.name || S.user.email,
+      range: { from: st.from, to: st.to }, slots: st.slots, status: "aktywna", recalcAt: now }, items));
+    closeSheet(); location.hash = `#/zakupy/${id}`;
+    if (missing.length) toast(`Bez planu: ${missing.map(x => DAY_NAMES[W.dayNum(x)] + " " + dLabel(x)).join(", ")} – te dni pominięto`, "err");
+    else toast(`Lista utworzona: ${Object.keys(items).length} pozycji`, "ok");
+  };
+}
+
+function itemRow(id, it) {
+  const done = it.checked && !it.more;
+  const src = (it.sources || []).map(x => `${DAY_NAMES[W.dayNum(x.date)]} ${SLOT_SHORT[x.slot] || x.slot}: ${esc(rName(x.recipeId))}`);
+  return `<div class="sitem ${done ? "done" : ""} ${it.gone ? "gone" : ""}">
+    <button class="ck" data-ck="${id}" aria-label="Kupione">${done ? "☑" : "☐"}</button>
+    <div class="nm" data-src="${id}"><b>${esc(it.name)}</b> <span class="amt">${esc(it.amount || "")}</span>
+      ${it.more ? `<span class="warntext small"> · dokup ~${fmt(Math.ceil(it.more / 5) * 5)} g (plan się zmienił)</span>` : ""}
+      ${it.gone ? `<span class="muted small"> · już niepotrzebne (plan się zmienił)</span>` : ""}
+      ${S.shop.open[id] && src.length ? `<div class="small muted src">${src.join("<br>")}</div>` : ""}
+      ${done && it.checkedBy ? `<div class="small muted">${esc(String(it.checkedBy).split("@")[0])}</div>` : ""}</div>
+    ${it.manual ? `<button class="ib" data-del="${id}" aria-label="Usuń">🗑</button>` : `<button class="ib" data-home="${id}" title="Mam w domu" aria-label="Mam w domu">🏠</button>`}</div>`;
+}
+
+function vShopList(m, id) {
+  ensureLists(); ensureItems(id);
+  const l = S.shop.lists?.[id]; const items = S.shop.items;
+  if (S.shop.lists && !l) { m.innerHTML = `<a class="back" href="#/zakupy">← Listy</a><div class="card">Lista nie istnieje (mogła zostać usunięta).</div>`; return; }
+  if (!l || items === undefined) { m.innerHTML = `<a class="back" href="#/zakupy">← Listy</a><div class="card muted">Wczytywanie…</div>`; return; }
+  const all = Object.entries(items);
+  const vis = Object.fromEntries(all.filter(([, it]) => !it.haveAtHome && (S.shop.showStaples || !it.staple) && (S.shop.showDone || !(it.checked && !it.more))));
+  const home = all.filter(([, it]) => it.haveAtHome);
+  const counted = all.filter(([, it]) => !it.haveAtHome && !it.staple && !it.gone);
+  const done = counted.filter(([, it]) => it.checked && !it.more).length;
+  const staples = all.filter(([, it]) => it.staple && !it.haveAtHome).length;
+  const closed = l.status === "zamknieta";
+  m.innerHTML = `<a class="back" href="#/zakupy">← Listy</a>
+    <h2>${esc(l.name)}${closed ? ` <span class="badge">zamknięta</span>` : ""}</h2>
+    <div class="muted small">${rangeTxt(l)} · ${slotsTxt(l)}</div>
+    <div class="progress"><div style="width:${counted.length ? Math.round(done / counted.length * 100) : 0}%"></div></div>
+    <div class="small">${done} / ${counted.length} kupione</div>
+    <div class="row tight shopbar"><button class="btn primary" id="lsCopy">📋 Do Listonic</button>${l.range ? `<button class="btn" id="lsRecalc">🔄 Przelicz</button>` : ""}<button class="btn" id="lsMore">⋯</button></div>
+    <form class="row tight addrow" id="lsAdd"><input id="lsTxt" placeholder="Dodaj pozycję, np. kawa" autocomplete="off"><input id="lsAmt" placeholder="ilość" style="width:5.5em">
+      <select id="lsAisle">${AISLES.map(a => `<option ${a === "Inne" ? "selected" : ""}>${a}</option>`).join("")}</select><button class="btn">Dodaj</button></form>
+    <div class="row tight"><label class="chk"><input type="checkbox" id="lsDone" ${S.shop.showDone ? "checked" : ""}> pokaż kupione</label>
+      ${staples ? `<label class="chk"><input type="checkbox" id="lsSt" ${S.shop.showStaples ? "checked" : ""}> pokaż „zawsze w domu” (${staples})</label>` : ""}</div>
+    ${SH.groupByAisle(vis).map(g => `<div class="card aisle"><h3>${esc(g.aisle)}</h3>${g.items.map(it => itemRow(it.id, it)).join("")}</div>`).join("") || `<div class="card muted">Pusto. Dodaj pozycję powyżej.</div>`}
+    ${home.length ? `<details class="card"><summary>Mam w domu (${home.length})</summary>${home.map(([iid, it]) => `<div class="sitem"><div class="nm"><b>${esc(it.name)}</b> <span class="amt">${esc(it.amount || "")}</span></div><button class="btn small" data-unhome="${iid}">przywróć</button></div>`).join("")}</details>` : ""}
+    <p class="muted small">Dotknij nazwy, żeby zobaczyć, do czego jest potrzebny produkt.${l.recalcAt ? ` Przeliczono: ${new Date(l.recalcAt).toLocaleString("pl-PL")}.` : ""}</p>`;
+  const now = () => new Date().toISOString();
+  m.querySelectorAll("[data-ck]").forEach(b => b.onclick = () => {
+    const it = items[b.dataset.ck]; const done2 = !(it.checked && !it.more);
+    const patch = { checked: done2, checkedBy: done2 ? S.user.email : null, checkedAt: done2 ? now() : null, more: null };
+    Object.assign(it, patch); rerenderShop(); bg(be.updateItem(id, b.dataset.ck, patch));
+  });
+  m.querySelectorAll("[data-src]").forEach(b => b.onclick = () => { S.shop.open[b.dataset.src] = !S.shop.open[b.dataset.src]; rerenderShop(); });
+  m.querySelectorAll("[data-home]").forEach(b => b.onclick = () => { items[b.dataset.home].haveAtHome = true; rerenderShop(); bg(be.updateItem(id, b.dataset.home, { haveAtHome: true })); });
+  m.querySelectorAll("[data-unhome]").forEach(b => b.onclick = () => { items[b.dataset.unhome].haveAtHome = false; rerenderShop(); bg(be.updateItem(id, b.dataset.unhome, { haveAtHome: false })); });
+  m.querySelectorAll("[data-del]").forEach(b => b.onclick = () => { delete items[b.dataset.del]; rerenderShop(); bg(be.deleteItem(id, b.dataset.del)); });
+  $("#lsDone").onchange = (e) => { S.shop.showDone = e.target.checked; rerenderShop(); };
+  if ($("#lsSt")) $("#lsSt").onchange = (e) => { S.shop.showStaples = e.target.checked; rerenderShop(); };
+  $("#lsAdd").onsubmit = (e) => { e.preventDefault(); const t = $("#lsTxt").value.trim(); if (!t) return;
+    const iid = be.newItemId(id); const it = SH.manualItem(t, $("#lsAisle").value, $("#lsAmt").value);
+    items[iid] = it; rerenderShop(); bg(be.setItem(id, iid, it)); setTimeout(() => $("#lsTxt")?.focus(), 0); };
+  $("#lsCopy").onclick = () => openListonic(items);
+  if ($("#lsRecalc")) $("#lsRecalc").onclick = () => recalcList(id, l, items);
+  $("#lsMore").onclick = () => {
+    const d = sheet(`<h3>${esc(l.name)}</h3><div class="acts">
+      <button class="btn" data-a="rename">✏️ Zmień nazwę</button>
+      <button class="btn" data-a="close">${closed ? "↩ Otwórz ponownie" : "✅ Zamknij listę (zakupy zrobione)"}</button>
+      <button class="btn" data-a="uncheck">☐ Odznacz wszystko</button>
+      <button class="btn danger" data-a="del">🗑 Usuń listę</button></div>
+      <div class="row"><button class="btn" id="shClose">Anuluj</button></div>`);
+    d.querySelector("#shClose").onclick = closeSheet;
+    d.querySelector('[data-a="rename"]').onclick = () => { const n = prompt("Nazwa listy:", l.name); closeSheet(); if (n?.trim()) bg(be.updateList(id, { name: n.trim() })); };
+    d.querySelector('[data-a="close"]').onclick = () => { closeSheet(); bg(be.updateList(id, { status: closed ? "aktywna" : "zamknieta" })); if (!closed) location.hash = "#/zakupy"; };
+    d.querySelector('[data-a="uncheck"]').onclick = () => { closeSheet(); const ups = {};
+      for (const [iid, it] of Object.entries(items)) if (it.checked) ups[iid] = { ...it, checked: false, checkedBy: null, checkedAt: null, more: null };
+      bg(be.writeItems(id, ups, [])); };
+    d.querySelector('[data-a="del"]').onclick = () => { if (!confirm(`Usunąć listę „${l.name}”? Tego nie da się cofnąć.`)) return;
+      closeSheet(); location.hash = "#/zakupy"; bg(be.deleteList(id)); };
+  };
+}
+
+async function recalcList(id, l, items) {
+  const weeks = await weeksFor(l.range.from, l.range.to);
+  const { need, missing } = SH.computeNeeds(weeks, S.recipes, { from: l.range.from, to: l.range.to, slots: l.slots || SLOTS });
+  const { upserts, deletes, stats } = SH.mergeItems(items, SH.buildItems(need, S.products));
+  if (!Object.keys(upserts).length && !deletes.length) return toast("Lista jest aktualna", "ok");
+  for (const dd of deletes) delete items[dd]; Object.assign(items, structuredClone(upserts)); rerenderShop();
+  bg(be.writeItems(id, upserts, deletes, { recalcAt: new Date().toISOString() }));
+  toast(`Przeliczono: +${stats.added} nowych, ${stats.changed} zmienionych, −${stats.removed} usuniętych${missing.length ? ` (bez planu: ${missing.length} dni)` : ""}`, "ok");
+}
+
+function openListonic(items) {
+  const txt = SH.listonicText(items, { staples: S.shop.showStaples }); const n = txt ? txt.split("\n").length : 0;
+  const d = sheet(`<h3>Kopiuj do Listonic</h3>
+    <p class="small muted">${n} pozycji do kupienia (bez kupionych i „mam w domu”). W Listonic: wersja w przeglądarce (app.listonic.com) → lista → wklej – każda linia to osobny produkt.</p>
+    <textarea id="lt" rows="12" style="width:100%" readonly>${esc(txt)}</textarea>
+    <div class="row"><button class="btn primary" id="ltCopy">📋 Kopiuj</button><button class="btn" id="shClose">Zamknij</button></div>`);
+  d.querySelector("#shClose").onclick = closeSheet;
+  d.querySelector("#ltCopy").onclick = async () => {
+    try { await navigator.clipboard.writeText(txt); toast(`Skopiowano ${n} pozycji`, "ok"); closeSheet(); }
+    catch { const t = d.querySelector("#lt"); t.focus(); t.select(); toast("Zaznaczono tekst – skopiuj ręcznie (przytrzymaj → Kopiuj)", "err"); }
+  };
 }
 
 // ---------- reguły tygodnia (administratorzy) ----------

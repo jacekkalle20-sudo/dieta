@@ -1,9 +1,12 @@
-// backend-demo.js – v0.3.0 – tryb pokazowy bez Firebase (adres z ?demo=1); dane tylko w pamięci przeglądarki
+// backend-demo.js – v0.4.0 – tryb pokazowy bez Firebase (adres z ?demo=1); dane tylko w pamięci przeglądarki
 // Sprawdza ograniczenia Firestore (brak tablic w tablicach, brak undefined), żeby błędy wychodziły już w demo.
 import { OWNER_EMAIL } from "./config.js";
 
 export function createBackend() {
-  const store = { config: null, profiles: {}, products: {}, recipes: {}, weeks: {} };
+  const store = { config: null, profiles: {}, products: {}, recipes: {}, weeks: {}, shopping: {}, items: {} };
+  const lw = []; const iw = {}; let seq = 0;
+  const nLists = () => lw.forEach(cb => setTimeout(() => cb(clone(store.shopping)), 0));
+  const nItems = (id) => (iw[id] || []).forEach(cb => setTimeout(() => cb(clone(store.items[id] || {})), 0));
   const watchers = {};
   const notify = (sat) => (watchers[sat] || []).forEach(cb => setTimeout(() => cb(store.weeks[sat] ? clone(store.weeks[sat]) : null, false), 0));
   let authCb = () => {};
@@ -34,6 +37,19 @@ export function createBackend() {
       Object.assign(w, clone(meta)); notify(sat);
     },
     watchWeek(sat, cb) { (watchers[sat] ||= []).push(cb); setTimeout(() => cb(store.weeks[sat] ? clone(store.weeks[sat]) : null, false), 0);
-      return () => { watchers[sat] = watchers[sat].filter(x => x !== cb); }; }
+      return () => { watchers[sat] = watchers[sat].filter(x => x !== cb); }; },
+    // listy zakupów
+    watchLists(cb) { lw.push(cb); setTimeout(() => cb(clone(store.shopping)), 0); return () => lw.splice(lw.indexOf(cb), 1); },
+    watchItems(id, cb) { (iw[id] ||= []).push(cb); setTimeout(() => cb(clone(store.items[id] || {})), 0); return () => { iw[id] = iw[id].filter(x => x !== cb); }; },
+    newListId: () => "L" + (++seq) + Date.now().toString(36),
+    newItemId: () => "i" + (++seq) + Date.now().toString(36),
+    async createList(id, data, items) { store.shopping[id] = clone(data); store.items[id] = clone(items); nLists(); nItems(id); },
+    async updateList(id, patch) { Object.assign(store.shopping[id], clone(patch)); nLists(); },
+    async setItem(l, i, it) { (store.items[l] ||= {})[i] = clone(it); nItems(l); },
+    async updateItem(l, i, patch) { if (!store.items[l]?.[i]) throw Object.assign(new Error("brak pozycji"), { code: "not-found" }); Object.assign(store.items[l][i], clone(patch)); nItems(l); },
+    async deleteItem(l, i) { delete store.items[l]?.[i]; nItems(l); },
+    async writeItems(l, ups, dels, listPatch = null) { const it = store.items[l] ||= {}; for (const [i, x] of Object.entries(ups)) it[i] = clone(x); for (const i of dels) delete it[i];
+      if (listPatch) { Object.assign(store.shopping[l], clone(listPatch)); nLists(); } nItems(l); },
+    async deleteList(id) { delete store.shopping[id]; delete store.items[id]; nLists(); nItems(id); }
   };
 }
