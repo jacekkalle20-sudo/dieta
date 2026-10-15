@@ -1,9 +1,9 @@
-// backend-firebase.js – v0.4.0 – dostęp do Firebase (Auth + Firestore)
+// backend-firebase.js – v0.5.0 – dostęp do Firebase (Auth + Firestore)
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
 import { getAuth, GoogleAuthProvider, signInWithPopup, signOut as fbSignOut, onAuthStateChanged }
   from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
 import { initializeFirestore, persistentLocalCache, persistentMultipleTabManager, doc, getDoc, getDocs,
-  setDoc, updateDoc, deleteDoc, collection, onSnapshot, FieldPath, writeBatch } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+  setDoc, updateDoc, deleteDoc, collection, onSnapshot, FieldPath, writeBatch, deleteField } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 import { firebaseConfig } from "./config.js";
 
 export function createBackend() {
@@ -23,6 +23,13 @@ export function createBackend() {
     updateProfile: (id, patch) => updateDoc(doc(db, "profiles", id), patch),
     async getChunks(coll) { const out = {}; (await getDocs(collection(db, coll))).forEach(d => out[d.id] = d.data()); return out; },
     setChunk: (coll, id, data) => setDoc(doc(db, coll, id), data),
+    // pojedynczy element w dokumencie zbiorczym (edytor przepisów i produktów)
+    async setChunkItem(coll, chunk, id, data) {
+      try { await updateDoc(doc(db, coll, chunk), new FieldPath("items", id), data); }
+      catch (e) { if (e.code !== "not-found") throw e; await setDoc(doc(db, coll, chunk), { items: { [id]: data } }); }
+    },
+    deleteChunkItem: (coll, chunk, id) => updateDoc(doc(db, coll, chunk), new FieldPath("items", id), deleteField()),
+    async listWeeks() { const out = {}; (await getDocs(collection(db, "weeks"))).forEach(d => out[d.id] = d.data()); return out; },
     async getWeek(sat) { const s = await getDoc(doc(db, "weeks", sat)); return s.exists() ? s.data() : null; },
     setWeek: (sat, data) => setDoc(doc(db, "weeks", sat), data),
     // zapis pojedynczych posiłków: [{date, slot, meal}]
@@ -62,6 +69,13 @@ export function createBackend() {
         jobs.push(b.commit());
       }
       return Promise.all(jobs);
+    },
+    rememberItem: (key, entry) => setDoc(doc(db, "shopping", "_pamiec"), { items: { [key]: entry } }, { merge: true }),
+    async dumpShopping() {
+      const out = {}; const q = await getDocs(collection(db, "shopping"));
+      for (const d of q.docs) { out[d.id] = { ...d.data() }; if (d.id.startsWith("_")) continue;
+        const it = {}; (await getDocs(collection(db, "shopping", d.id, "items"))).forEach(x => it[x.id] = x.data()); out[d.id]._items = it; }
+      return out;
     },
     async deleteList(id) {
       const q = await getDocs(collection(db, "shopping", id, "items")); const ids = []; q.forEach(d => ids.push(d.id));

@@ -1,4 +1,4 @@
-// backend-demo.js – v0.4.0 – tryb pokazowy bez Firebase (adres z ?demo=1); dane tylko w pamięci przeglądarki
+// backend-demo.js – v0.5.0 – tryb pokazowy bez Firebase (adres z ?demo=1); dane tylko w pamięci przeglądarki
 // Sprawdza ograniczenia Firestore (brak tablic w tablicach, brak undefined), żeby błędy wychodziły już w demo.
 import { OWNER_EMAIL } from "./config.js";
 
@@ -29,6 +29,9 @@ export function createBackend() {
     async updateProfile(id, p) { Object.assign(store.profiles[id], clone(p)); },
     async getChunks(coll) { return clone(store[coll]); },
     async setChunk(coll, id, d) { store[coll][id] = clone(d); },
+    async setChunkItem(coll, chunk, id, d) { (store[coll][chunk] ||= { items: {} }).items[id] = clone(d); },
+    async deleteChunkItem(coll, chunk, id) { delete store[coll][chunk]?.items?.[id]; },
+    async listWeeks() { return clone(store.weeks); },
     async getWeek(sat) { return store.weeks[sat] ? clone(store.weeks[sat]) : null; },
     async setWeek(sat, d) { store.weeks[sat] = clone(d); notify(sat); },
     async updateMeals(sat, items, meta = {}) {
@@ -50,6 +53,8 @@ export function createBackend() {
     async deleteItem(l, i) { delete store.items[l]?.[i]; nItems(l); },
     async writeItems(l, ups, dels, listPatch = null) { const it = store.items[l] ||= {}; for (const [i, x] of Object.entries(ups)) it[i] = clone(x); for (const i of dels) delete it[i];
       if (listPatch) { Object.assign(store.shopping[l], clone(listPatch)); nLists(); } nItems(l); },
+    async rememberItem(key, entry) { const m = store.shopping._pamiec ||= { items: {} }; m.items[key] = clone(entry); nLists(); },
+    async dumpShopping() { const out = clone(store.shopping); for (const id of Object.keys(out)) if (!id.startsWith("_")) out[id]._items = clone(store.items[id] || {}); return out; },
     async deleteList(id) { delete store.shopping[id]; delete store.items[id]; nLists(); nItems(id); }
   };
 }

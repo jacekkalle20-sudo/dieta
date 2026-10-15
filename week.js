@@ -1,4 +1,4 @@
-// week.js – v0.3.1 – tydzień planu (sobota–piątek), generator i operacje na posiłkach (bez zależności od Firebase)
+// week.js – v0.5.0 – tydzień planu (sobota–piątek), generator i operacje na posiłkach (bez zależności od Firebase)
 import { SLOTS } from "./defaults.js";
 import { slotKcal } from "./scaling.js";
 
@@ -292,19 +292,23 @@ export function leaveMeal(week, ctx, date, slot, pid) {
   normalize(ctx, week, slot); return [date];
 }
 
-// Ilości do gotowania: suma skal osób jedzących to samo danie (dzień lub dni z resztkami w bloku)
-export function cookingScales(week, ctx, date, slot, scope, pid = null) {
+// Ilości do gotowania: suma skal osób jedzących to samo danie.
+// scope: "day" – ten dzień; "block" – dni bloku gotowane razem (od dnia gotowania, także gdy otwarto dzień „z wczoraj”)
+// who: "all" – wszyscy przy stole; "me" – tylko osoba pid
+export function cookingScales(week, ctx, date, slot, scope, pid = null, who = "all") {
   const m = week.days[date][slot]; const rid = recipeOf(m, pid) ?? m.recipeId; const rows = [];
-  const eaters = (x) => participants(x).filter(p => recipeOf(x, p) === rid);
+  const eaters = (x) => participants(x).filter(p => recipeOf(x, p) === rid && (who !== "me" || p === pid));
   const isLeft = (x, p) => x.mode === "shared" ? x.cook === false : x.per[p].cook === false;
+  const run = (x) => x && participants(x).some(p => recipeOf(x, p) === rid);
   let dates = [date];
   if (scope === "block") {
-    dates = [];
-    for (const d of blockDates(ctx.config, slot, week.start, date).filter(d => d >= date)) {
-      const x = week.days[d]?.[slot]; const e = x ? eaters(x) : [];
-      if (!e.length || (d !== date && !e.some(p => isLeft(x, p)))) break;
-      dates.push(d);
-    }
+    const blk = blockDates(ctx.config, slot, week.start, date); let i = blk.indexOf(date);
+    // cofnij do dnia gotowania
+    while (i > 0) { const x = week.days[blk[i]]?.[slot]; const prev = week.days[blk[i - 1]]?.[slot];
+      if (!run(x) || !run(prev) || !participants(x).some(p => recipeOf(x, p) === rid && isLeft(x, p))) break; i--; }
+    dates = [blk[i]];
+    for (const d of blk.slice(i + 1)) { const x = week.days[d]?.[slot];
+      if (!run(x) || !participants(x).some(p => recipeOf(x, p) === rid && isLeft(x, p))) break; dates.push(d); }
   }
   for (const d of dates) for (const p of eaters(week.days[d][slot])) rows.push({ date: d, pid: p, scale: week.days[d][slot].per[p].scale || 0 });
   return { rows, total: rows.reduce((a, b) => a + b.scale, 0), dates };

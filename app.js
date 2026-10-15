@@ -1,4 +1,4 @@
-// app.js – Dieta dla Rodziny – v0.4.0 (M4: listy zakupów; M3: plan tygodnia, generator, Dziś, reguły, dołączanie do posiłku)
+// app.js – Dieta dla Rodziny – v0.5.0 (M4+: listy zakupów z podpowiedziami, edytor przepisów, kopia i przywracanie; M3: plan tygodnia)
 import { APP_VERSION, APP_STAGE } from "./version.js";
 import { OWNER_EMAIL } from "./config.js";
 import { defaultConfig, defaultProfiles, CATEGORY_NAMES, TAG_NAMES, FAMILY_NAMES, SLOT_NAMES, DAY_NAMES, productChunkOf, recipeChunkOf } from "./defaults.js";
@@ -8,15 +8,16 @@ import { slotKcal, portionScale, defaultSlotFor, validateSlots } from "./scaling
 import { SLOTS } from "./defaults.js";
 import * as W from "./week.js";
 import * as SH from "./shopping.js";
-import { AISLES } from "./defaults.js";
+import { vEditRecipe, STATUS_NAMES } from "./edytor.js";
+import { AISLES, applyFamilyMap } from "./defaults.js";
 
 const demo = new URLSearchParams(location.search).has("demo");
 const { createBackend } = await import(demo ? "./backend-demo.js" : "./backend-firebase.js");
 const be = createBackend();
 
-const S = { user: null, config: null, profiles: {}, products: {}, recipes: {}, invite: null, filters: { q: "", cat: "", tag: "", profile: "" }, portion: { profile: "", slot: "", base: false, recipe: "", amount: "me" },
+const S = { user: null, config: null, profiles: {}, products: {}, recipes: {}, invite: null, filters: { q: "", cat: "", tag: "", profile: "" }, portion: { profile: "", slot: "", base: false, recipe: "", who: "me", days: "day" }, edit: null,
   week: { sat: null, data: undefined, unsub: null }, weekSel: null, weekProfile: "", todayProfile: "",
-  shop: { lists: undefined, unsubL: null, listId: null, items: undefined, unsubI: null, showDone: true, showStaples: false, open: {} } };
+  shop: { lists: undefined, memory: {}, unsubL: null, listId: null, items: undefined, unsubI: null, showDone: true, showStaples: false, open: {} } };
 const $ = (sel) => document.querySelector(sel);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const isAdmin = () => S.invite?.role === "admin";
@@ -96,11 +97,16 @@ async function boot() {
 async function loadData() {
   const pc = await be.getChunks("products"); S.products = {};
   for (const c of Object.values(pc)) Object.assign(S.products, c.items || {});
+  applyFamilyMap(S.products);
   const rc = await be.getChunks("recipes"); S.recipes = {};
   for (const c of Object.values(rc)) Object.assign(S.recipes, c.items || {});
+  refreshIndexes();
+}
+function refreshIndexes() {
   S.kcalOf = W.buildKcalIndex(S.recipes, (r) => recipeTotals(r, S.products));
   S.famOf = W.buildFamilyIndex(S.recipes, S.products);
 }
+const editorApi = () => ({ S, be, $, esc, fmt, toast, sheet, closeSheet, profileList, W, refreshIndexes });
 
 // ---------- powłoka i nawigacja ----------
 const NAV = [["dzis", "Dziś", "☀️"], ["tydzien", "Tydzień", "📅"], ["zakupy", "Zakupy", "🛒"], ["przepisy", "Przepisy", "📖"], ["wiecej", "Więcej", "☰"]];
@@ -111,11 +117,11 @@ function renderShell() {
 addEventListener("hashchange", () => S.config && route());
 function route() {
   const [, view, arg, a2, a3, a4] = (location.hash || "#/dzis").split("/");
-  document.querySelectorAll(".nav a").forEach(a => a.classList.toggle("on", a.dataset.k === ({ przepis: "przepisy", profil: "wiecej" }[view] || view)));
+  document.querySelectorAll(".nav a").forEach(a => a.classList.toggle("on", a.dataset.k === ({ przepis: "przepisy", edytuj: "przepisy", profil: "wiecej" }[view] || view)));
   const m = $("#main"); if (!m) return;
   closeSheet();
   ({ dzis: () => vToday(m), tydzien: () => vWeek(m, arg), zakupy: () => arg ? vShopList(m, arg) : vShopping(m),
-     przepisy: () => vRecipes(m), przepis: () => vRecipe(m, arg, a2 ? { date: a2, slot: a3, pid: a4 || "" } : null), profil: () => vProfile(m, arg), wiecej: () => vMore(m) }[view] || (() => vRecipes(m)))();
+     przepisy: () => vRecipes(m), edytuj: () => isAdmin() ? vEditRecipe(m, arg, editorApi()) : vRecipes(m), przepis: () => vRecipe(m, arg, a2 ? { date: a2, slot: a3, pid: a4 || "" } : null), profil: () => vProfile(m, arg), wiecej: () => vMore(m) }[view] || (() => vRecipes(m)))();
   window.scrollTo(0, 0);
 }
 
@@ -133,16 +139,18 @@ function vRecipes(m) {
     m.innerHTML = `<h2>Przepisy</h2><div class="card">Baza przepisów jest pusta. ${isAdmin() ? `Zaimportuj produkty i przepisy: <a href="#/wiecej">Więcej → Rodzina</a>.` : "Administrator musi zaimportować przepisy."}</div>`;
     return;
   }
-  m.innerHTML = `<h2>Przepisy <span class="muted small">(${count})</span></h2>
+  const arch = Object.values(S.recipes).filter(r => r.status === "archiwum").length;
+  m.innerHTML = `<h2>Przepisy <span class="muted small">(${count - arch})</span>${isAdmin() ? ` <a class="btn small primary" href="#/edytuj/nowy" id="rNew">+ Nowy przepis</a>` : ""}</h2>
     <div class="filters">
       <input id="q" type="search" placeholder="Szukaj przepisu lub składnika…" value="${esc(f.q)}">
       <select id="cat"><option value="">Wszystkie kategorie</option>${Object.entries(CATEGORY_NAMES).map(([k, v]) => `<option value="${k}" ${f.cat === k ? "selected" : ""}>${v}</option>`).join("")}</select>
       <select id="tag"><option value="">Wszystkie tagi</option>${Object.entries(TAG_NAMES).map(([k, v]) => `<option value="${k}" ${f.tag === k ? "selected" : ""}>${v}</option>`).join("")}</select>
       <select id="prof"><option value="">Bez filtra wykluczeń</option>${profileList().map(([k, p]) => `<option value="${k}" ${f.profile === k ? "selected" : ""}>Bez wykluczeń: ${esc(p.name)}</option>`).join("")}</select>
-    </div><div id="list" class="list"></div>`;
+    </div>${arch ? `<label class="chk small"><input type="checkbox" id="arch" ${f.arch ? "checked" : ""}> pokaż archiwum (${arch})</label>` : ""}<div id="list" class="list"></div>`;
   const draw = () => {
     const q = f.q.trim().toLowerCase(); const ex = f.profile ? excludedFor(f.profile) : new Set();
     const rows = Object.entries(S.recipes).filter(([id, r]) => {
+      if ((r.status === "archiwum") !== !!f.arch) return false;
       if (f.cat && r.category !== f.cat) return false;
       if (f.tag && !(r.tags || []).includes(f.tag)) return false;
       if (ex.size && recipeFamilies(r, S.products).some(x => ex.has(x))) return false;
@@ -152,7 +160,7 @@ function vRecipes(m) {
     $("#list").innerHTML = rows.length ? rows.map(([id, r]) => {
       const t = recipeTotals(r, S.products);
       return `<a class="item" href="#/przepis/${id}"><div class="t">${esc(r.name)}</div>
-        <div class="meta">${CATEGORY_NAMES[r.category]} · ${fmt(t.kcal)} kcal · Fe ${fmt(t.fe, 1)} mg${r.timeMin ? ` · ${r.timeMin} min` : ""}
+        <div class="meta">${r.status && r.status !== "aktywny" ? `<span class="badge">${esc(STATUS_NAMES[r.status]?.split(" (")[0] || r.status)}</span> ` : ""}${CATEGORY_NAMES[r.category]} · ${fmt(t.kcal)} kcal · Fe ${fmt(t.fe, 1)} mg${r.timeMin ? ` · ${r.timeMin} min` : ""}
         ${(r.tags || []).map(x => `<span class="tag ${x}">${TAG_NAMES[x] || x}</span>`).join("")}</div></a>`;
     }).join("") : `<div class="card muted">Brak przepisów dla tych filtrów.</div>`;
   };
@@ -160,15 +168,23 @@ function vRecipes(m) {
   $("#cat").onchange = (e) => { f.cat = e.target.value; draw(); };
   $("#tag").onchange = (e) => { f.tag = e.target.value; draw(); };
   $("#prof").onchange = (e) => { f.profile = e.target.value; draw(); };
+  if ($("#arch")) $("#arch").onchange = (e) => { f.arch = e.target.checked; draw(); };
+  if ($("#rNew")) $("#rNew").onclick = () => { S.edit = null; };
   draw();
 }
 
+// Rozpiska ilości: „Gotujesz 4 porcje na sob + nd: Jacek ×1,00 + ×1,00 · Agata … = ×3,90 przepisu”
+function cookTxt(cook) {
+  const by = {}; for (const r of cook.rows) (by[r.pid] ||= []).push(r.scale);
+  const n = cook.rows.length; const pl = n === 1 ? "porcję" : n % 10 >= 2 && n % 10 <= 4 && (n % 100 < 12 || n % 100 > 14) ? "porcje" : "porcji";
+  return `Gotujesz ${n} ${pl}${cook.dates.length > 1 ? ` na ${cook.dates.map(d => DAY_NAMES[W.dayNum(d)]).join(" + ")}` : ""}: ${byOrder(Object.keys(by)).map(pid => `${esc(S.profiles[pid]?.name)} ${by[pid].map(x => "×" + fmt(x, 2)).join(" + ")}`).join(" · ")} = <b>×${fmt(cook.total, 2)} przepisu</b>`;
+}
 function vRecipe(m, id, cx = null) {
   const r = S.recipes[id];
   if (!r) { m.innerHTML = `<div class="card">Nie znaleziono przepisu.</div>`; return; }
   const P = S.portion;
   const ckey = id + (cx ? `/${cx.date}/${cx.slot}/${cx.pid}` : "");
-  if (P.recipe !== ckey) { P.recipe = ckey; P.slot = ""; P.amount = "me"; P.base = false;
+  if (P.recipe !== ckey) { P.recipe = ckey; P.slot = ""; P.who = "me"; P.days = "day"; P.base = false;
     if (cx) { P.profile = cx.pid || S.invite.profileId; P.slot = cx.slot;
       const mm = S.week.data?.days?.[cx.date]?.[cx.slot]; // we wspólnym posiłku „dla mnie” = zalogowana osoba, jeśli je
       if (mm?.mode === "shared" && W.participants(mm).includes(S.invite.profileId)) P.profile = S.invite.profileId; } }
@@ -178,8 +194,11 @@ function vRecipe(m, id, cx = null) {
   const ctxW = cookCtx ? ctxFor(wk.start) : null;
   const cDay = cookCtx ? W.cookingScales(wk, ctxW, cx.date, cx.slot, "day", cx.pid) : null;
   const cBlk = cookCtx ? W.cookingScales(wk, ctxW, cx.date, cx.slot, "block", cx.pid) : null;
-  const amtOpts = cookCtx ? [["me", "Dla mnie"], ...(cDay.rows.length > 1 ? [["all", "Dla wszystkich przy stole"]] : []), ...(cBlk.dates.length > 1 ? [["block", "Na cały blok"]] : [])] : [];
-  if (!amtOpts.some(([v]) => v === P.amount)) P.amount = "me";
+  // dwa przełączniki: dla kogo (ja / wszyscy przy stole) × na ile (dziś / dni bloku gotowane razem)
+  const whoOpts = cookCtx && (cDay.rows.length > 1 || new Set(cBlk.rows.map(x => x.pid)).size > 1) ? [["me", "Dla mnie"], ["all", "Dla wszystkich przy stole"]] : [];
+  const daysOpts = cookCtx && cBlk.dates.length > 1 ? [["day", "Dziś"], ["block", `Na ${cBlk.dates.length} dni (${cBlk.dates.map(d => DAY_NAMES[W.dayNum(d)]).join(" + ")})`]] : [];
+  if (!whoOpts.length) P.who = "me"; if (!daysOpts.length) P.days = "day";
+  const mePid = cookCtx && W.participants(meal).includes(P.profile) && W.recipeOf(meal, P.profile) === id ? P.profile : cx?.pid;
   // gospodarz posiłku do „Dołącz domownika”: wspólny – brak; indywidualny – osoba lub ta, do której dołączyła
   const joinHost = cookCtx && meal.mode !== "shared" ? (meal.per[cx.pid]?.with || cx.pid) : null;
   const canJoin = cookCtx && (meal.mode === "shared" || (joinHost && !meal.per[joinHost]?.outside)) && W.joinOptions(wk, ctxW, cx.date, cx.slot, joinHost).length > 0;
@@ -191,18 +210,20 @@ function vRecipe(m, id, cx = null) {
   const lim = S.config.scaleLimits || { min: 0.5, max: 2.0 };
   let ps = P.base ? { scale: 1, raw: 1, ok: true } : portionScale(base.kcal, target, lim);
   let cook = null;
-  if (cookCtx && P.amount !== "me" && !P.base) { cook = P.amount === "block" ? cBlk : cDay; ps = { scale: cook.total, raw: cook.total, ok: true }; }
+  if (cookCtx && !P.base && (P.who === "all" || P.days === "block")) {
+    cook = W.cookingScales(wk, ctxW, cx.date, cx.slot, P.days, P.who === "me" ? mePid : cx.pid, P.who);
+    ps = { scale: cook.total, raw: cook.total, ok: true }; }
   const k = ps.scale; const t = Object.fromEntries(Object.entries(base).map(([a, v]) => [a, v * k]));
   const blocked = profileList().filter(([, p]) => (p.exclusions?.families || []).some(x => fam.includes(x)));
   const mine = (prof?.exclusions?.families || []).filter(x => fam.includes(x));
   m.innerHTML = `<a href="${cx ? "javascript:history.back()" : "#/przepisy"}" class="back">← ${cx ? "Wróć do planu" : "Przepisy"}</a>
-    <h2>${esc(r.name)}</h2>
-    <div class="meta">${CATEGORY_NAMES[r.category]}${r.timeMin ? ` · ${r.timeMin} min` : ""} · ${esc(r.source)} ${(r.tags || []).map(x => `<span class="tag ${x}">${TAG_NAMES[x] || x}</span>`).join("")}</div>
+    <h2>${esc(r.name)}${isAdmin() ? ` <button class="btn small" id="rEdit">✏️ Edytuj</button>` : ""}</h2>
+    <div class="meta">${r.status && r.status !== "aktywny" ? `<span class="badge">${esc(STATUS_NAMES[r.status] || r.status)}</span> ` : ""}${CATEGORY_NAMES[r.category]}${r.timeMin ? ` · ${r.timeMin} min` : ""} · ${esc(r.source)} ${(r.tags || []).map(x => `<span class="tag ${x}">${TAG_NAMES[x] || x}</span>`).join("")}</div>
     <div class="card portion">
-      ${amtOpts.length > 1 ? `<div class="seg">${amtOpts.map(([v, n]) =>
-        `<button class="${P.amount === v ? "on" : ""}" data-amt="${v}">${n}</button>`).join("")}</div>` : ""}
+      ${whoOpts.length ? `<div class="seg">${whoOpts.map(([v, n]) => `<button class="${P.who === v ? "on" : ""}" data-who="${v}">${n}</button>`).join("")}</div>` : ""}
+      ${daysOpts.length ? `<div class="seg">${daysOpts.map(([v, n]) => `<button class="${P.days === v ? "on" : ""}" data-days="${v}">${n}</button>`).join("")}</div>` : ""}
       ${canJoin ? `<div class="row tight"><button class="btn small" id="pJoin">➕ Dołącz domownika</button>${cDay.rows.length > 1 ? `<span class="muted small">Przy stole: ${cDay.rows.map(r => esc(S.profiles[r.pid]?.name)).join(", ")}</span>` : ""}</div>` : ""}
-      ${cook ? `<div class="small">Gotujesz ${fmt(cook.rows.length)} ${cook.rows.length === 1 ? "porcję" : cook.rows.length < 5 ? "porcje" : "porcji"}${cook.dates.length > 1 ? ` na ${cook.dates.map(d => DAY_NAMES[W.dayNum(d)]).join(" + ")}` : ""}: ${cook.rows.map(r => `${esc(S.profiles[r.pid]?.name)} ×${fmt(r.scale, 2)}`).join(" · ")} = ×${fmt(cook.total, 2)} przepisu</div>` : `
+      ${cook ? `<div class="small">${cookTxt(cook)}</div>` : `
       <div class="row tight">
         <select id="pProf">${profileList().map(([pid, p]) => `<option value="${pid}" ${pid === P.profile ? "selected" : ""}>${esc(p.name)}</option>`).join("")}</select>
         <select id="pSlot">${slotsOf(prof).map(sl => `<option value="${sl}" ${sl === P.slot ? "selected" : ""}>${SLOT_NAMES[sl]} · ${slotKcal(prof, sl)} kcal</option>`).join("")}</select>
@@ -219,8 +240,10 @@ function vRecipe(m, id, cx = null) {
     <div class="card"><h3>Przygotowanie</h3><p>${esc(r.steps)}</p></div>
     <p class="muted small">Porcja bazowa ${fmt(base.kcal)} kcal (wyliczone z gramatur; źródło podawało ${r.sourceKcal ?? "–"} kcal). Id: ${id}, wersja ${r.rev}.</p>`;
   const again = () => vRecipe(m, id, cx);
-  m.querySelectorAll("[data-amt]").forEach(b => b.onclick = () => { P.amount = b.dataset.amt; again(); });
-  if ($("#pJoin")) $("#pJoin").onclick = () => { P.amount = "all"; openJoin(cx.date, cx.slot, joinHost); };
+  m.querySelectorAll("[data-who]").forEach(b => b.onclick = () => { P.who = b.dataset.who; again(); });
+  m.querySelectorAll("[data-days]").forEach(b => b.onclick = () => { P.days = b.dataset.days; again(); });
+  if ($("#pJoin")) $("#pJoin").onclick = () => { P.who = "all"; openJoin(cx.date, cx.slot, joinHost); };
+  if ($("#rEdit")) $("#rEdit").onclick = () => { location.hash = `#/edytuj/${id}`; };
   if ($("#pProf")) {
     $("#pProf").onchange = (e) => { P.profile = e.target.value; P.slot = ""; again(); };
     $("#pSlot").onchange = (e) => { P.slot = e.target.value; again(); };
@@ -267,17 +290,19 @@ async function generate(sat) {
   catch (e) { toast("Błąd generowania: " + (e.code || e.message), "err"); }
 }
 
-function mealLine(w, date, slot, pid) {
+// Linia posiłku: nazwa dania (1. wiersz) + drobne szczegóły (2. wiersz) – opcja kcal pomijana w widoku wspólnym
+function mealLine(w, date, slot, pid, { kcal = true } = {}) {
   const m = w.days[date][slot]; const p = m.per[pid];
-  if (p.outside) return `<span class="muted">poza domem${p.note && p.note !== "poza domem" ? ` (${esc(p.note)})` : ""}${p.kcal ? ` · ~${p.kcal} kcal` : ""}</span>`;
+  if (p.outside) return `<span class="mn muted">poza domem</span><span class="mm">${[p.note && p.note !== "poza domem" ? esc(p.note) : "", p.kcal ? `~${p.kcal} kcal` : ""].filter(Boolean).join(" · ")}</span>`;
   const rid = m.mode === "shared" ? m.recipeId : p.recipeId;
   const kc = rid && p.scale ? Math.round(S.kcalOf[rid] * p.scale) : null;
   const lo = m.mode === "shared" ? (m.cook === false ? m.leftoverFrom : null) : (p.cook === false ? p.leftoverFrom : null);
   const guests = m.mode === "individual" ? byOrder(Object.keys(m.per).filter(g => m.per[g].with === pid && !m.per[g].outside)) : [];
-  const tags = `${p.with ? ` <span class="badge join">razem z: ${esc(pName(p.with))}</span>` : ""}${guests.length ? ` <span class="badge join">+ ${guests.map(g => esc(pName(g))).join(", ")}</span>` : ""}${p.extra ? ` <span class="badge">dodatkowo</span>` : ""}`;
-  return `${rid ? `<a href="#/przepis/${rid}/${date}/${slot}/${pid}">${esc(rName(rid))}</a>` : `<span class="warntext">${rName(null)}</span>`}
-    ${kc ? `<span class="muted small">· ${kc} kcal</span>` : ""}${lo ? ` <span class="badge">z ${DAY_NAMES[W.dayNum(lo)]}</span>` : ""}${(m.mode === "shared" ? m.locked : p.locked) ? " 🔒" : ""}${tags}
-    ${rid && (S.recipes[rid]?.tags || []).includes("zelazo") ? `<span class="tag zelazo">Fe</span>` : ""}`;
+  const meta = [kcal && kc ? `${kc} kcal` : "", lo ? `z ${DAY_NAMES[W.dayNum(lo)]}` : "",
+    rid && (S.recipes[rid]?.tags || []).includes("zelazo") ? `<span class="fe">Fe</span>` : "",
+    (m.mode === "shared" ? m.locked : p.locked) ? "🔒" : "",
+    p.with ? `z: ${esc(pName(p.with))}` : "", guests.length ? `+ ${guests.map(g => esc(pName(g))).join(", ")}` : "", p.extra ? "dodatkowo" : ""].filter(Boolean);
+  return `<span class="mn">${rid ? `<a href="#/przepis/${rid}/${date}/${slot}/${pid}">${esc(rName(rid))}</a>` : `<span class="warntext">${rName(null)}</span>`}</span>${meta.length ? `<span class="mm">${meta.join(" · ")}</span>` : ""}`;
 }
 
 function slotHtml(w, date, slot, only) {
@@ -288,19 +313,19 @@ function slotHtml(w, date, slot, only) {
   if (only) {
     if (!m.per[only]) return "";
     return `<div class="slot"><div class="sh">${SLOT_NAMES[slot]}${m.mode === "shared" ? ` <span class="badge sh2">wspólny</span>` : ""}</div>
-      <div class="sl">${mealLine(w, date, slot, only)} ${act(m.mode === "shared" ? "" : only)}</div></div>`;
+      <div class="sl person one"><div class="ml">${mealLine(w, date, slot, only)}</div>${act(m.mode === "shared" ? "" : only)}</div></div>`;
   }
   if (m.mode === "shared") {
     const lena = parts.filter(pid => S.profiles[pid]?.flags?.ironRich && m.recipeId && !(S.recipes[m.recipeId]?.tags || []).includes("zelazo"));
     const kc = m.recipeId ? parts.map(pid => `${esc(pName(pid))} ${Math.round(S.kcalOf[m.recipeId] * (m.per[pid].scale || 0))}`).join(" · ") : "";
     return `<div class="slot shared"><div class="sh">${SLOT_NAMES[slot]} <span class="badge sh2">wspólny · ${parts.length} os.</span> ${act()}</div>
-      <div class="sl">${mealLine(w, date, slot, parts[0] || Object.keys(m.per)[0])}</div>
-      <div class="small muted">${kc} kcal${extras.length ? ` · dodatkowo: ${extras.map(x => esc(pName(x))).join(", ")}` : ""}</div>
+      <div class="sl"><div class="ml">${mealLine(w, date, slot, parts[0] || Object.keys(m.per)[0], { kcal: false })}</div></div>
+      <div class="mm">${kc} kcal${extras.length ? ` · dodatkowo: ${extras.map(x => esc(pName(x))).join(", ")}` : ""}</div>
       ${outs.length ? `<div class="small muted">Poza domem: ${outs.map(([pid, p]) => esc(pName(pid)) + (p.note ? ` (${esc(p.note)})` : "")).join(", ")}</div>` : ""}
       ${lena.map(pid => `<div class="hint">Fe+ ${esc(pName(pid))}: ${esc(W.ironHints(S.profiles[pid])[0])}</div>`).join("")}</div>`;
   }
   return `<div class="slot"><div class="sh">${SLOT_NAMES[slot]} <span class="muted small">indywidualnie</span></div>
-    ${byOrder(Object.keys(m.per)).map(pid => `<div class="sl person"><b>${esc(pName(pid))}</b> ${mealLine(w, date, slot, pid)} ${act(pid)}</div>`).join("")}</div>`;
+    ${byOrder(Object.keys(m.per)).map(pid => `<div class="sl person"><b>${esc(pName(pid))}</b><div class="ml">${mealLine(w, date, slot, pid)}</div>${act(pid)}</div>`).join("")}</div>`;
 }
 
 function vWeek(m, arg) {
@@ -426,7 +451,7 @@ function vToday(m) {
     <div class="row tight">${sel}<span class="muted">${sum.kcal} / ${sum.target} kcal</span></div>
     <div class="todaylist">${SLOTS.filter(sl => w.days[today]?.[sl]?.per?.[pid]).map(sl => { const mm = w.days[today][sl]; const e = mm.per[pid];
       return `<div class="card tslot"><div class="sh">${SLOT_NAMES[sl]}${mm.mode === "shared" ? ` <span class="badge sh2">wspólny</span>` : ""}</div>
-        <div class="sl">${mealLine(w, today, sl, pid)}</div>
+        <div class="sl"><div class="ml">${mealLine(w, today, sl, pid)}</div></div>
         <div class="row tight">${e.extra ? "" : `<button class="btn small" data-out="${sl}">${e.outside ? "Jednak w domu" : "Jem poza domem"}</button>`}
         <button class="btn small" data-act="${today}|${sl}|${mm.mode === "shared" ? "" : pid}">⋯ więcej</button></div></div>`; }).join("")}</div>
     <p><a href="#/tydzien">Cały tydzień →</a></p>`;
@@ -444,7 +469,9 @@ function vToday(m) {
 const SLOT_SHORT = { sniadanie: "śn", ii_sniadanie: "II śn", obiad: "obiad", przekaska: "przek", kolacja: "kol" };
 function ensureLists() {
   if (S.shop.unsubL) return;
-  S.shop.unsubL = be.watchLists((d) => { S.shop.lists = d; rerenderShop(); }, (e) => toast("Błąd synchronizacji list: " + (e.code || e.message), "err"));
+  S.shop.unsubL = be.watchLists((d) => {
+    S.shop.memory = d[SH.MEMORY_DOC]?.items || {};
+    S.shop.lists = Object.fromEntries(Object.entries(d).filter(([id]) => !id.startsWith("_"))); rerenderShop(); }, (e) => toast("Błąd synchronizacji list: " + (e.code || e.message), "err"));
 }
 function ensureItems(id) {
   if (S.shop.listId === id) return;
@@ -457,7 +484,27 @@ function ensureItems(id) {
 function rerenderShop() {
   const [, view, arg] = (location.hash || "").split("/"); const m = $("#main");
   if (view !== "zakupy" || !m || $("#sheet")) return;
+  // zachowanie wpisywanego tekstu i kursora przy odświeżeniu (np. ktoś odhacza na innym telefonie)
+  const keep = ["lsTxt", "lsAmt", "lsAisle"].map(id => [id, $("#" + id)?.value]); const act = document.activeElement?.id;
   const y = scrollY; arg ? vShopList(m, arg) : vShopping(m); scrollTo(0, y);
+  for (const [id, v] of keep) if (v != null && $("#" + id)) $("#" + id).value = v;
+  if (act && $("#" + act)) { $("#" + act).focus(); if (act === "lsTxt") drawSug(); }
+}
+// podpowiedzi przy dodawaniu pozycji ręcznej
+function drawSug() {
+  const box = $("#lsSug"); if (!box) return;
+  const q = $("#lsTxt").value; const list = SH.suggestions(S.shop.memory, S.products, q, q ? 6 : 8);
+  box.innerHTML = list.map((x, i) => `<button type="button" class="chip ${x.src}" data-sug="${i}">${esc(x.name)}${x.amount ? ` <span class="muted">${esc(x.amount)}</span>` : ""}</button>`).join("");
+  box.querySelectorAll("[data-sug]").forEach(b => b.onclick = () => addManual(list[+b.dataset.sug]));
+}
+function addManual(x) {
+  const id = S.shop.listId; const items = S.shop.items; if (!id || !items || !x?.name?.trim()) return;
+  const it = SH.manualItem(x.name, x.aisle || "Inne", x.amount || "");
+  const iid = be.newItemId(id); items[iid] = it;
+  bg(be.setItem(id, iid, it)); bg(be.rememberItem(SH.memKey(it.name), SH.rememberEntry(S.shop.memory, it)));
+  S.shop.memory[SH.memKey(it.name)] = SH.rememberEntry(S.shop.memory, it);
+  if ($("#lsTxt")) { $("#lsTxt").value = ""; $("#lsAmt").value = ""; $("#lsAisle").value = "Inne"; }
+  rerenderShop(); setTimeout(() => { $("#lsTxt")?.focus(); drawSug(); }, 0);
 }
 const bg = (p) => p.catch(e => toast("Błąd zapisu: " + (e.code || e.message), "err")); // zapis w tle (działa offline)
 const rangeTxt = (l) => l.range ? `${DAY_NAMES[W.dayNum(l.range.from)]} ${dLabel(l.range.from)} – ${DAY_NAMES[W.dayNum(l.range.to)]} ${dLabel(l.range.to)}` : "lista ręczna";
@@ -558,6 +605,7 @@ function vShopList(m, id) {
     <div class="row tight shopbar"><button class="btn primary" id="lsCopy">📋 Do Listonic</button>${l.range ? `<button class="btn" id="lsRecalc">🔄 Przelicz</button>` : ""}<button class="btn" id="lsMore">⋯</button></div>
     <form class="row tight addrow" id="lsAdd"><input id="lsTxt" placeholder="Dodaj pozycję, np. kawa" autocomplete="off"><input id="lsAmt" placeholder="ilość" style="width:5.5em">
       <select id="lsAisle">${AISLES.map(a => `<option ${a === "Inne" ? "selected" : ""}>${a}</option>`).join("")}</select><button class="btn">Dodaj</button></form>
+    <div id="lsSug" class="chips"></div>
     <div class="row tight"><label class="chk"><input type="checkbox" id="lsDone" ${S.shop.showDone ? "checked" : ""}> pokaż kupione</label>
       ${staples ? `<label class="chk"><input type="checkbox" id="lsSt" ${S.shop.showStaples ? "checked" : ""}> pokaż „zawsze w domu” (${staples})</label>` : ""}</div>
     ${SH.groupByAisle(vis).map(g => `<div class="card aisle"><h3>${esc(g.aisle)}</h3>${g.items.map(it => itemRow(it.id, it)).join("")}</div>`).join("") || `<div class="card muted">Pusto. Dodaj pozycję powyżej.</div>`}
@@ -575,9 +623,12 @@ function vShopList(m, id) {
   m.querySelectorAll("[data-del]").forEach(b => b.onclick = () => { delete items[b.dataset.del]; rerenderShop(); bg(be.deleteItem(id, b.dataset.del)); });
   $("#lsDone").onchange = (e) => { S.shop.showDone = e.target.checked; rerenderShop(); };
   if ($("#lsSt")) $("#lsSt").onchange = (e) => { S.shop.showStaples = e.target.checked; rerenderShop(); };
-  $("#lsAdd").onsubmit = (e) => { e.preventDefault(); const t = $("#lsTxt").value.trim(); if (!t) return;
-    const iid = be.newItemId(id); const it = SH.manualItem(t, $("#lsAisle").value, $("#lsAmt").value);
-    items[iid] = it; rerenderShop(); bg(be.setItem(id, iid, it)); setTimeout(() => $("#lsTxt")?.focus(), 0); };
+  $("#lsAdd").onsubmit = (e) => { e.preventDefault(); addManual({ name: $("#lsTxt").value, aisle: $("#lsAisle").value, amount: $("#lsAmt").value }); };
+  $("#lsTxt").oninput = () => { // dział i ilość z pamięci, gdy nazwa pasuje dokładnie
+    const n = $("#lsTxt").value; const a = SH.aisleFor(S.shop.memory, S.products, n); if (a) $("#lsAisle").value = a;
+    const mm = S.shop.memory[SH.memKey(n)]; if (mm?.amount && !$("#lsAmt").value) $("#lsAmt").value = mm.amount;
+    drawSug(); };
+  $("#lsTxt").onfocus = drawSug;
   $("#lsCopy").onclick = () => openListonic(items);
   if ($("#lsRecalc")) $("#lsRecalc").onclick = () => recalcList(id, l, items);
   $("#lsMore").onclick = () => {
@@ -754,13 +805,15 @@ function adminHtml() {
         <select id="invProf">${profileList().map(([k, p]) => `<option value="${k}">${esc(p.name)}</option>`).join("")}</select>
         <select id="invRole"><option value="member">domownik</option><option value="admin">administrator</option></select>
         <button class="btn primary" id="invAdd">Dodaj</button></div></div>
-    <div class="card"><h3>Import danych</h3>
+    <details class="card"><summary>Import danych</summary>
       <p class="muted small">Najpierw produkty, potem przepisy. Import dodaje nowe i aktualizuje zmienione – niczego nie usuwa. Przed importem zrób kopię.</p>
       <div class="row"><label class="btn">Wybierz plik produktów…<input type="file" accept=".json" id="fProd" hidden></label>
         <label class="btn">Wybierz plik przepisów…<input type="file" accept=".json" id="fRec" hidden></label></div>
-      <div id="impOut"></div></div>
-    <div class="card"><h3>Kopia zapasowa</h3><p class="muted small">Stan bazy: ${Object.keys(S.products).length} produktów, ${Object.keys(S.recipes).length} przepisów.</p>
-      <button class="btn" id="export">Pobierz kopię (JSON)</button></div>`;
+      <div id="impOut"></div></details>
+    <details class="card"><summary>Kopia zapasowa</summary><p class="muted small">Stan bazy: ${Object.keys(S.products).length} produktów, ${Object.keys(S.recipes).length} przepisów.
+      Kopia zawiera ustawienia, profile (z wykluczeniami i preferencjami), produkty, przepisy, plany tygodni, listy zakupów i podpowiedzi.</p>
+      <div class="row"><button class="btn" id="export">Pobierz kopię (JSON)</button>
+        <label class="btn">Przywróć z kopii…<input type="file" accept=".json" id="fRestore" hidden></label></div></details>`;
 }
 
 function bindAdmin() {
@@ -778,6 +831,7 @@ function bindAdmin() {
   $("#fProd").onchange = (e) => readJson(e.target.files[0], importProducts);
   $("#fRec").onchange = (e) => readJson(e.target.files[0], importRecipes);
   $("#export").onclick = exportBackup;
+  $("#fRestore").onchange = (e) => readJson(e.target.files[0], openRestore);
 }
 
 async function saveConfig(cfg) {
@@ -828,13 +882,53 @@ function importRecipes(json) {
   });
 }
 
-function exportBackup() {
-  const data = { kind: "kopia", appVersion: APP_VERSION, exportedAt: new Date().toISOString(),
-    config: S.config, profiles: S.profiles, products: S.products, recipes: S.recipes };
+async function exportBackup() {
+  let weeks = {}, shopping = {};
+  try { weeks = await be.listWeeks(); shopping = await be.dumpShopping(); }
+  catch (e) { toast("Nie udało się pobrać planów/list: " + (e.code || e.message) + " – kopia bez nich", "err"); }
+  const data = { kind: "kopia", schema: 2, appVersion: APP_VERSION, exportedAt: new Date().toISOString(),
+    config: S.config, profiles: S.profiles, products: S.products, recipes: S.recipes, weeks, shopping };
   const a = document.createElement("a");
   a.href = URL.createObjectURL(new Blob([JSON.stringify(data, null, 1)], { type: "application/json" }));
   a.download = `kopia-dieta-${new Date().toISOString().slice(0, 10)}.json`; a.click();
   setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+}
+
+// Przywracanie z kopii: podsumowanie i wybór zakresu, potem zapis (administrator)
+function openRestore(json) {
+  if (json?.kind !== "kopia" || !json.config || !json.profiles) return toast("To nie jest plik kopii aplikacji", "err");
+  const lists = Object.keys(json.shopping || {}).filter(k => !k.startsWith("_"));
+  const mem = Object.keys(json.shopping?._pamiec?.items || {}).length;
+  const meAdmin = json.config.invites?.[S.user.email]?.role === "admin";
+  const parts = [
+    ["cfg", "Ustawienia i profile", `zaproszenia, reguły tygodnia, ${Object.keys(json.profiles).length} profili${meAdmin ? "" : " – <b class='warntext'>niedostępne: w kopii nie jesteś administratorem</b>"}`, meAdmin],
+    ["db", "Produkty i przepisy", `produkty: ${Object.keys(json.products || {}).length}, przepisy: ${Object.keys(json.recipes || {}).length} – zastąpią obecne (${Object.keys(S.products).length} / ${Object.keys(S.recipes).length})`, !!json.products],
+    ["weeks", "Plany tygodni", `tygodnie: ${Object.keys(json.weeks || {}).length} – nadpiszą tygodnie o tych samych datach`, !!Object.keys(json.weeks || {}).length],
+    ["shop", "Listy zakupów i podpowiedzi", `listy: ${lists.length}, podpowiedzi: ${mem} – nadpiszą listy o tych samych id`, !!(lists.length || mem)]];
+  const d = sheet(`<h3>Przywróć z kopii</h3>
+    <p class="small muted">Kopia z ${json.exportedAt ? new Date(json.exportedAt).toLocaleString("pl-PL") : "?"} (wersja aplikacji ${esc(json.appVersion || "?")}). Zaznacz, co przywrócić. Rzeczy spoza kopii (np. nowsze tygodnie) zostają.</p>
+    ${parts.map(([k, n, info, on]) => `<label class="chk block"><input type="checkbox" data-rp="${k}" ${on ? "checked" : "disabled"}> <span><b>${n}</b><br><span class="small muted">${info}</span></span></label>`).join("")}
+    <div class="row"><button class="btn primary" id="rsGo">Przywróć</button><button class="btn" id="shClose">Anuluj</button></div>`);
+  d.querySelector("#shClose").onclick = closeSheet;
+  d.querySelector("#rsGo").onclick = async () => {
+    const sel = new Set([...d.querySelectorAll("[data-rp]:checked")].map(c => c.dataset.rp)); if (!sel.size) return toast("Nic nie zaznaczono", "err");
+    if (!confirm("Przywrócić zaznaczone części? Obecne dane w tych częściach zostaną zastąpione.")) return;
+    d.querySelector("#rsGo").disabled = true; d.querySelector("#rsGo").textContent = "Przywracanie…";
+    try {
+      if (sel.has("cfg")) { await be.setConfig(json.config); for (const [id, p] of Object.entries(json.profiles)) await be.setProfile(id, p); }
+      if (sel.has("db")) for (const [coll, items, chunkOf] of [["products", json.products, (p) => productChunkOf(p.aisle)], ["recipes", json.recipes, (r) => recipeChunkOf(r.category)]]) {
+        const chunks = {}; for (const cid of Object.keys(await be.getChunks(coll))) chunks[cid] = { items: {} };
+        for (const [id, it] of Object.entries(items)) (chunks[chunkOf(it)] ||= { items: {} }).items[id] = it;
+        for (const [cid, c] of Object.entries(chunks)) await be.setChunk(coll, cid, c);
+      }
+      if (sel.has("weeks")) for (const [sat, w] of Object.entries(json.weeks)) await be.setWeek(sat, w);
+      if (sel.has("shop")) {
+        for (const id of lists) { const { _items, ...data } = json.shopping[id]; if (S.shop.lists?.[id]) await be.deleteList(id); await be.createList(id, data, _items || {}); }
+        for (const [k, v] of Object.entries(json.shopping._pamiec?.items || {})) await be.rememberItem(k, v);
+      }
+      closeSheet(); toast("Przywrócono z kopii", "ok"); if (S.week.unsub) S.week.unsub(); S.week = { sat: null, data: undefined, unsub: null }; await boot();
+    } catch (e) { toast("Błąd przywracania: " + (e.code || e.message), "err"); d.querySelector("#rsGo").disabled = false; d.querySelector("#rsGo").textContent = "Przywróć"; }
+  };
 }
 
 // ---------- uruchomienie ----------

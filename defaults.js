@@ -1,21 +1,38 @@
-// defaults.js – v0.1.2 – wartości startowe (specyfikacja v1.3, model danych v1.2)
+// defaults.js – v0.5.0 – wartości startowe (specyfikacja v1.3, model danych v1.5)
 export const SLOTS = ["sniadanie", "ii_sniadanie", "obiad", "przekaska", "kolacja"];
 export const SLOT_NAMES = { sniadanie: "Śniadanie", ii_sniadanie: "II śniadanie", obiad: "Obiad", przekaska: "Przekąska", kolacja: "Kolacja", deser: "Deser" };
 export const CATEGORY_NAMES = { sniadanie: "Śniadania", ii_sniadanie: "II śniadania", przekaska: "Przekąski", obiad: "Obiady", kolacja: "Kolacje", deser: "Desery" };
 export const TAG_NAMES = { zelazo: "żelazo", express: "express", keto: "keto", "2-dni": "na 2 dni" };
 export const FAMILY_NAMES = {
   "migdaly": "migdały", "orzechy-laskowe": "orzechy laskowe", "rodzynki": "rodzynki",
-  "watrobka": "wątróbka", "natka-pietruszki": "natka pietruszki", "suszone-morele": "suszone morele"
+  "watrobka": "wątróbka", "natka-pietruszki": "natka pietruszki", "suszone-morele": "suszone morele",
+  "mleko": "mleko (mleko, kefir, maślanka)", "nabial": "nabiał krowi (wszystkie produkty mleczne)", "papryka": "papryka (świeża i mielona)", "krewetki": "krewetki"
 };
+// Przypisanie rodzin wykluczeń do produktów z bazy v1.0 (nakładane przy wczytaniu; nowe produkty dostają rodziny w edytorze)
+const MLEKO = ["mleko-2", "mleko-05", "maslanka", "kefir", "kefir-0"];
+export const FAMILY_PRODUCTS = {
+  mleko: MLEKO,
+  nabial: [...MLEKO, "jogurt-naturalny", "jogurt-naturalny-0", "jogurt-grecki", "skyr", "smietana-18", "twarog-chudy", "twarog-poltlusty",
+    "serek-wiejski", "serek-wiejski-light", "serek-homogenizowany", "serek-smietankowy", "ser-zolty", "mozzarella", "mozzarella-light",
+    "feta", "ricotta", "parmezan", "ser-plesniowy", "maslo", "maslo-klarowane"],
+  papryka: ["papryka-czerwona", "papryka-zielona", "papryka-zolta", "papryka-slodka-mielona", "chili"],
+  krewetki: ["krewetki"]
+};
+export function applyFamilyMap(products) {
+  for (const [fam, ids] of Object.entries(FAMILY_PRODUCTS)) for (const id of ids) {
+    const p = products[id]; if (p && !(p.families || []).includes(fam)) p.families = [...(p.families || []), fam];
+  }
+  return products;
+}
 export const AISLES = ["Warzywa i owoce", "Pieczywo", "Nabiał i jaja", "Mięso i wędliny", "Ryby", "Kasze, ryż, makarony, mąki",
-  "Konserwy i słoiki", "Mrożonki", "Bakalie, orzechy, nasiona", "Oleje, sosy, przyprawy", "Napoje", "Słodycze i dodatki do wypieków", "Inne"];
+  "Konserwy i słoiki", "Mrożonki", "Bakalie, orzechy, nasiona", "Oleje, sosy, przyprawy", "Napoje", "Słodycze i dodatki do wypieków", "Chemia", "Inne"];
 export const DAY_NAMES = { 1: "pn", 2: "wt", 3: "śr", 4: "czw", 5: "pt", 6: "sob", 7: "nd" };
 
 // Grupowanie produktów w dokumenty zbiorcze (mało odczytów)
 export const PRODUCT_CHUNKS = {
   "p-swieze": ["Warzywa i owoce", "Pieczywo"],
   "p-chlodnia": ["Nabiał i jaja", "Mięso i wędliny", "Ryby", "Mrożonki"],
-  "p-suche": ["Kasze, ryż, makarony, mąki", "Konserwy i słoiki", "Bakalie, orzechy, nasiona", "Oleje, sosy, przyprawy", "Napoje", "Słodycze i dodatki do wypieków", "Inne"]
+  "p-suche": ["Kasze, ryż, makarony, mąki", "Konserwy i słoiki", "Bakalie, orzechy, nasiona", "Oleje, sosy, przyprawy", "Napoje", "Słodycze i dodatki do wypieków", "Chemia", "Inne"]
 };
 export const productChunkOf = (aisle) => Object.keys(PRODUCT_CHUNKS).find(k => PRODUCT_CHUNKS[k].includes(aisle)) || "p-suche";
 export const recipeChunkOf = (category) => "r-" + category;

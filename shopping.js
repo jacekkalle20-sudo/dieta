@@ -1,4 +1,4 @@
-// shopping.js – v0.4.0 – lista zakupów: sumowanie składników z planu, opakowania, działy, przeliczanie, tekst do Listonic
+// shopping.js – v0.5.0 – lista zakupów: sumowanie składników z planu, opakowania, działy, przeliczanie, tekst do Listonic
 // Bez zależności od Firebase – testowane w Node.
 import { SLOTS, AISLES } from "./defaults.js";
 import { addDays, saturdayOf, participants, recipeOf } from "./week.js";
@@ -124,4 +124,31 @@ export function listonicText(items, { staples = false } = {}) {
 export function manualItem(text, aisle = "Inne", amount = "") {
   return { productId: null, name: text.trim(), aisle, staple: false, qtyG: null, amount: amount.trim(), packages: null, pieces: null,
     sources: [], manual: true, haveAtHome: false, checked: false, checkedBy: null, checkedAt: null };
+}
+
+// ---------- pamięć pozycji ręcznych (podpowiedzi) ----------
+// Dokument shopping/_pamiec: { items: { klucz: {name, aisle, amount, n, last} } }
+export const MEMORY_DOC = "_pamiec";
+export const memKey = (name) => name.trim().toLowerCase().replace(/\s+/g, " ");
+export function rememberEntry(memory, item, now = new Date().toISOString()) {
+  const old = memory?.[memKey(item.name)];
+  return { name: item.name.trim(), aisle: item.aisle || "Inne", amount: item.amount || "", n: (old?.n || 0) + 1, last: now };
+}
+// Podpowiedzi: najpierw z pamięci (częściej dodawane wyżej), potem produkty z bazy
+export function suggestions(memory, products, query, limit = 6) {
+  const q = memKey(query || ""); const out = []; const seen = new Set();
+  const mem = Object.values(memory || {}).sort((a, b) => (b.n || 0) - (a.n || 0) || (b.last || "").localeCompare(a.last || ""));
+  for (const m of mem) if (!q || memKey(m.name).includes(q)) { out.push({ ...m, src: "mem" }); seen.add(memKey(m.name)); }
+  if (q.length >= 2) for (const p of Object.values(products || {})) {
+    const k = memKey(p.name); if (seen.has(k)) continue;
+    if (k.startsWith(q) || (p.aliases || []).some(a => memKey(a).startsWith(q))) { out.push({ name: p.name, aisle: p.aisle, amount: "", src: "prod" }); seen.add(k); }
+  }
+  return out.slice(0, limit);
+}
+// Dział dla wpisanej nazwy (dokładne dopasowanie z pamięci lub bazy produktów)
+export function aisleFor(memory, products, name) {
+  const k = memKey(name); if (!k) return null;
+  if (memory?.[k]) return memory[k].aisle;
+  const p = Object.values(products || {}).find(p => memKey(p.name) === k || (p.aliases || []).some(a => memKey(a) === k));
+  return p?.aisle || null;
 }
