@@ -1,7 +1,7 @@
-// sw.js – Dieta dla Rodziny – service worker v0.5.0 (pamięć podręczna aplikacji do pracy offline)
-const CACHE = "dieta-v0.5.0";
+// sw.js – Dieta dla Rodziny – service worker v0.6.0 (pamięć podręczna aplikacji do pracy offline)
+const CACHE = "dieta-v0.6.0";
 const SHELL = ["./", "index.html", "styles.css", "manifest.json", "config.js", "icon-192.png", "icon-512.png",
-  "app.js", "version.js", "defaults.js", "importer.js", "nutrition.js", "scaling.js", "week.js", "shopping.js", "edytor.js", "backend-firebase.js"];
+  "app.js", "version.js", "defaults.js", "importer.js", "nutrition.js", "scaling.js", "week.js", "shopping.js", "edytor.js", "uwagi.js", "backend-firebase.js"];
 
 self.addEventListener("install", (e) => { e.waitUntil(caches.open(CACHE).then(c => c.addAll(SHELL))); self.skipWaiting(); });
 self.addEventListener("activate", (e) => {

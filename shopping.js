@@ -1,7 +1,8 @@
-// shopping.js – v0.5.0 – lista zakupów: sumowanie składników z planu, opakowania, działy, przeliczanie, tekst do Listonic
+// shopping.js – v0.6.0 – lista zakupów: sumowanie składników z planu, opakowania, działy, przeliczanie, tekst do Listonic
 // Bez zależności od Firebase – testowane w Node.
 import { SLOTS, AISLES } from "./defaults.js";
 import { addDays, saturdayOf, participants, recipeOf } from "./week.js";
+import { yieldOf } from "./nutrition.js";
 
 // Soboty tygodni potrzebnych dla zakresu dat
 export function saturdaysIn(from, to) {
@@ -9,8 +10,9 @@ export function saturdaysIn(from, to) {
 }
 
 // Zapotrzebowanie: { productId: { g, sources: [{date, slot, recipeId}] } } + dni bez planu
-// weeks = { sobota: dokument tygodnia | null }, opts = { from, to, slots }
-export function computeNeeds(weeks, recipes, { from, to, slots = SLOTS }) {
+// weeks = { sobota: dokument tygodnia | null }, opts = { from, to, slots, people (null = wszyscy), desserts }
+// Desery z planu dnia (days[d].deser.items: [{rid, mult}]) liczone na całość: g × yield × mult, bez filtra osób.
+export function computeNeeds(weeks, recipes, { from, to, slots = SLOTS, people = null, desserts = true }) {
   const need = {}; const missing = [];
   for (let d = from; d <= to; d = addDays(d, 1)) {
     const day = weeks[saturdayOf(d)]?.days?.[d];
@@ -19,6 +21,7 @@ export function computeNeeds(weeks, recipes, { from, to, slots = SLOTS }) {
       if (!slots.includes(sl)) continue;
       const m = day[sl]; if (!m) continue;
       for (const pid of participants(m)) {
+        if (people && !people.includes(pid)) continue;
         const p = m.per[pid]; const rid = recipeOf(m, pid); const r = recipes[rid];
         if (!r || !p.scale) continue;
         // „z wczoraj”: składniki kupione razem z dniem gotowania; gdy gotowanie było przed zakresem – pomiń
@@ -31,6 +34,13 @@ export function computeNeeds(weeks, recipes, { from, to, slots = SLOTS }) {
           if (!e.sources.some(s => s.date === d && s.slot === sl && s.recipeId === rid)) e.sources.push({ date: d, slot: sl, recipeId: rid });
         }
       }
+    }
+    if (desserts) for (const it of day.deser?.items || []) {
+      const r = recipes[it.rid]; if (!r) continue;
+      const k = (yieldOf(r) || 1) * (it.mult || 1);
+      for (const x of r.ingredients) { if (!x.g) continue;
+        const e = need[x.p] ||= { g: 0, sources: [] }; e.g += x.g * k;
+        if (!e.sources.some(s => s.date === d && s.slot === "deser" && s.recipeId === it.rid)) e.sources.push({ date: d, slot: "deser", recipeId: it.rid }); }
     }
   }
   return { need, missing };
@@ -114,7 +124,7 @@ export function listonicText(items, { staples = false } = {}) {
     if (it.haveAtHome || it.gone || (it.staple && !staples)) continue;
     if (it.checked && it.more) { lines.push(`${it.name} ~${roundG(it.more)} g`); continue; } // dokupić po zmianie planu
     if (it.checked) continue;
-    const q = it.manual ? (it.amount || "") : it.packages ? `${it.packages.n} × ${it.packages.label}` : it.amount.replace(/ \(~.*\)$/, "");
+    const q = it.packages ? `${it.packages.n} × ${it.packages.label}` : it.productId ? (it.amount || "").replace(/ \(~.*\)$/, "") : (it.amount || "");
     lines.push(`${it.name}${q ? " " + q : ""}`.trim());
   }
   return lines.join("\n");
@@ -151,4 +161,19 @@ export function aisleFor(memory, products, name) {
   if (memory?.[k]) return memory[k].aisle;
   const p = Object.values(products || {}).find(p => memKey(p.name) === k || (p.aliases || []).some(a => memKey(a) === k));
   return p?.aisle || null;
+}
+
+// ---------- desery ----------
+// Pozycje listy dla deseru (całość × mult); oznaczone jako ręczne – „Przelicz” ich nie rusza
+export function dessertItems(recipe, rid, mult, products, tag) {
+  const k = (yieldOf(recipe) || 1) * mult; const sum = {};
+  for (const x of recipe.ingredients) if (x.g) sum[x.p] = (sum[x.p] || 0) + x.g * k;
+  const out = {};
+  for (const [pid, g] of Object.entries(sum)) {
+    const pr = products[pid]; const a = buyAmount(pr, g);
+    out[`d-${tag}-${pid}`] = { productId: pid, name: pr?.name || pid, aisle: pr?.aisle || "Inne", staple: !!pr?.staple, qtyG: Math.round(g * 10) / 10,
+      amount: a.text, packages: a.packages, pieces: a.pieces, sources: [{ date: null, slot: "deser", recipeId: rid }], manual: true, dessert: recipe.name,
+      haveAtHome: false, checked: false, checkedBy: null, checkedAt: null };
+  }
+  return out;
 }

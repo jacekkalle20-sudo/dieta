@@ -1,6 +1,6 @@
-// edytor.js – v0.5.0 – dodawanie i edycja przepisów oraz produktów w aplikacji (administratorzy)
+// edytor.js – v0.6.0 – dodawanie i edycja przepisów oraz produktów w aplikacji (administratorzy)
 import { CATEGORY_NAMES, TAG_NAMES, FAMILY_NAMES, AISLES, productChunkOf, recipeChunkOf } from "./defaults.js";
-import { recipeTotals, recipeFamilies } from "./nutrition.js";
+import { recipeTotals, recipeFamilies, yieldOf } from "./nutrition.js";
 
 export const STATUS_NAMES = { aktywny: "aktywny", do_wyprobowania: "do wypróbowania (poza losowaniem)", do_uzupelnienia: "do uzupełnienia (poza losowaniem)", archiwum: "archiwum (ukryty)" };
 export const UNIT_NAMES = { g: "g", ml: "ml", szt: "szt", lyzka: "łyżka", lyzeczka: "łyżeczka", plaster: "plaster", kromka: "kromka", garsc: "garść",
@@ -50,6 +50,7 @@ export function buildRecipe(draft, products, old = null) {
   if (!ingredients.length) errors.push("Dodaj co najmniej jeden składnik.");
   const recipe = { name: draft.name.trim(), category: draft.category, tags: [...draft.tags], ingredients, steps: draft.steps.trim(),
     timeMin: draft.timeMin > 0 ? Math.round(draft.timeMin) : null, source: draft.source.trim() || "Rodzina", calc: null,
+    yield: draft.category === "deser" && +draft.yield > 0 ? Math.round(+draft.yield) : null,
     sourceKcal: old?.sourceKcal ?? null, status: draft.status || "aktywny", ratings: old?.ratings || {}, season: old?.season ?? null, rev: (old?.rev || 0) + 1 };
   if (ingredients.length) { const t = recipeTotals(recipe, products); recipe.calc = Object.fromEntries(Object.entries(t).map(([k, v]) => [k, Math.round(v * 10) / 10])); }
   return { recipe, errors };
@@ -73,9 +74,9 @@ export function vEditRecipe(m, id, A) {
   const isNew = id === "nowy"; const old = isNew ? null : S.recipes[id];
   if (!isNew && !old) { m.innerHTML = `<div class="card">Nie znaleziono przepisu.</div>`; return; }
   if (!S.edit || S.edit.id !== id) S.edit = { id, d: old ? {
-      name: old.name, category: old.category, tags: [...(old.tags || [])], steps: old.steps || "", timeMin: old.timeMin || "", source: old.source || "", status: old.status || "aktywny",
+      name: old.name, category: old.category, yield: yieldOf(old) || "", tags: [...(old.tags || [])], steps: old.steps || "", timeMin: old.timeMin || "", source: old.source || "", status: old.status || "aktywny",
       rows: old.ingredients.map(x => rowFromIngredient(x, S.products)) }
-    : { name: "", category: "obiad", tags: [], steps: "", timeMin: "", source: "Rodzina", status: "aktywny", rows: [{ p: "", qty: "", unit: "g" }] } };
+    : { name: "", category: "obiad", yield: "", tags: [], steps: "", timeMin: "", source: "Rodzina", status: "aktywny", rows: [{ p: "", qty: "", unit: "g" }] } };
   const D = S.edit.d; const P = S.products;
   const byName = {}; for (const [pid, p] of Object.entries(P)) byName[p.name.toLowerCase()] = pid;
   const draw = () => {
@@ -89,11 +90,12 @@ export function vEditRecipe(m, id, A) {
         <label>Nazwa<input id="eName" value="${esc(D.name)}" placeholder="np. Gulasz z indykiem"></label>
         <div class="row tight"><label>Kategoria<select id="eCat">${Object.entries(CATEGORY_NAMES).map(([k, v]) => `<option value="${k}" ${D.category === k ? "selected" : ""}>${v}</option>`).join("")}</select></label>
           <label>Czas (min)<input id="eTime" type="number" min="0" value="${esc(D.timeMin)}" style="width:6em"></label>
+          ${D.category === "deser" ? `<label>Wychodzi porcji<input id="eYield" type="number" min="1" value="${esc(D.yield)}" style="width:6em" placeholder="np. 16"></label>` : ""}
           <label>Status<select id="eStat">${Object.entries(STATUS_NAMES).map(([k, v]) => `<option value="${k}" ${D.status === k ? "selected" : ""}>${v}</option>`).join("")}</select></label></div>
         <div class="row tight">${Object.entries(TAG_NAMES).map(([k, v]) => `<label class="chk"><input type="checkbox" data-tag="${k}" ${D.tags.includes(k) ? "checked" : ""}> ${v}</label>`).join("")}</div>
         <label>Źródło<input id="eSrc" value="${esc(D.source)}"></label>
       </div>
-      <div class="card"><h3>Składniki <span class="muted small">(na 1 porcję bazową)</span></h3>
+      <div class="card"><h3>Składniki <span class="muted small">(na 1 porcję${D.category === "deser" ? " – np. 1 kawałek; całość = porcja × liczba porcji" : " bazową"})</span></h3>
         <datalist id="prodNames">${Object.values(P).map(p => `<option value="${esc(p.name)}">`).join("")}</datalist>
         ${D.rows.map((r, i) => { const p = P[r.p]; const g = p ? toGrams(p, +r.qty, r.unit) : 0;
           return `<div class="erow"><input list="prodNames" data-pn="${i}" value="${esc(p?.name || r.name || "")}" placeholder="produkt…" class="${r.name && !p ? "bad" : ""}">
@@ -115,7 +117,8 @@ export function vEditRecipe(m, id, A) {
   const bind = () => {
     const $ = A.$;
     $("#eName").oninput = (e) => D.name = e.target.value;
-    $("#eCat").onchange = (e) => D.category = e.target.value;
+    $("#eCat").onchange = (e) => { D.category = e.target.value; keepScroll(draw); };
+    if ($("#eYield")) $("#eYield").oninput = (e) => D.yield = e.target.value;
     $("#eTime").oninput = (e) => D.timeMin = e.target.value;
     $("#eStat").onchange = (e) => D.status = e.target.value;
     $("#eSrc").oninput = (e) => D.source = e.target.value;

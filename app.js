@@ -1,14 +1,15 @@
-// app.js – Dieta dla Rodziny – v0.5.0 (M4+: listy zakupów z podpowiedziami, edytor przepisów, kopia i przywracanie; M3: plan tygodnia)
+// app.js – Dieta dla Rodziny – v0.6.0 (desery w planie i na liście, uwagi, wybór domowników na liście zakupów, powrót do dnia w planie)
 import { APP_VERSION, APP_STAGE } from "./version.js";
 import { OWNER_EMAIL } from "./config.js";
 import { defaultConfig, defaultProfiles, CATEGORY_NAMES, TAG_NAMES, FAMILY_NAMES, SLOT_NAMES, DAY_NAMES, productChunkOf, recipeChunkOf } from "./defaults.js";
 import { validateProducts, validateRecipes, diffItems, mergeIntoChunks } from "./importer.js";
-import { recipeTotals, recipeFamilies, formatAmount } from "./nutrition.js";
+import { recipeTotals, recipeFamilies, formatAmount, yieldOf } from "./nutrition.js";
 import { slotKcal, portionScale, defaultSlotFor, validateSlots } from "./scaling.js";
 import { SLOTS } from "./defaults.js";
 import * as W from "./week.js";
 import * as SH from "./shopping.js";
 import { vEditRecipe, STATUS_NAMES } from "./edytor.js";
+import * as N from "./uwagi.js";
 import { AISLES, applyFamilyMap } from "./defaults.js";
 
 const demo = new URLSearchParams(location.search).has("demo");
@@ -16,7 +17,7 @@ const { createBackend } = await import(demo ? "./backend-demo.js" : "./backend-f
 const be = createBackend();
 
 const S = { user: null, config: null, profiles: {}, products: {}, recipes: {}, invite: null, filters: { q: "", cat: "", tag: "", profile: "" }, portion: { profile: "", slot: "", base: false, recipe: "", who: "me", days: "day" }, edit: null,
-  week: { sat: null, data: undefined, unsub: null }, weekSel: null, weekProfile: "", todayProfile: "",
+  week: { sat: null, data: undefined, unsub: null }, weekSel: null, weekProfile: "", todayProfile: "", weekUi: {}, restoreY: 0,
   shop: { lists: undefined, memory: {}, unsubL: null, listId: null, items: undefined, unsubI: null, showDone: true, showStaples: false, open: {} } };
 const $ = (sel) => document.querySelector(sel);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -106,6 +107,7 @@ function refreshIndexes() {
   S.kcalOf = W.buildKcalIndex(S.recipes, (r) => recipeTotals(r, S.products));
   S.famOf = W.buildFamilyIndex(S.recipes, S.products);
 }
+const notesApi = () => ({ S, be, $, esc, toast, sheet, closeSheet, isAdmin });
 const editorApi = () => ({ S, be, $, esc, fmt, toast, sheet, closeSheet, profileList, W, refreshIndexes });
 
 // ---------- powłoka i nawigacja ----------
@@ -117,13 +119,15 @@ function renderShell() {
 addEventListener("hashchange", () => S.config && route());
 function route() {
   const [, view, arg, a2, a3, a4] = (location.hash || "#/dzis").split("/");
-  document.querySelectorAll(".nav a").forEach(a => a.classList.toggle("on", a.dataset.k === ({ przepis: "przepisy", edytuj: "przepisy", profil: "wiecej" }[view] || view)));
+  document.querySelectorAll(".nav a").forEach(a => a.classList.toggle("on", a.dataset.k === ({ przepis: "przepisy", edytuj: "przepisy", profil: "wiecej", uwagi: "wiecej" }[view] || view)));
   const m = $("#main"); if (!m) return;
   closeSheet();
   ({ dzis: () => vToday(m), tydzien: () => vWeek(m, arg), zakupy: () => arg ? vShopList(m, arg) : vShopping(m),
-     przepisy: () => vRecipes(m), edytuj: () => isAdmin() ? vEditRecipe(m, arg, editorApi()) : vRecipes(m), przepis: () => vRecipe(m, arg, a2 ? { date: a2, slot: a3, pid: a4 || "" } : null), profil: () => vProfile(m, arg), wiecej: () => vMore(m) }[view] || (() => vRecipes(m)))();
-  window.scrollTo(0, 0);
+     przepisy: () => vRecipes(m), edytuj: () => isAdmin() ? vEditRecipe(m, arg, editorApi()) : vRecipes(m), przepis: () => vRecipe(m, arg, a2 ? { date: a2, slot: a3, pid: a4 || "" } : null), profil: () => vProfile(m, arg), wiecej: () => vMore(m), uwagi: () => N.vNotes(m, notesApi()) }[view] || (() => vRecipes(m)))();
+  window.scrollTo(0, S.restoreY || 0); S.restoreY = 0;
 }
+// Plan tygodnia: zapamiętane rozwinięte dni i przewinięcie (powrót z przepisu do tego samego miejsca)
+addEventListener("scroll", () => { if ((location.hash || "").startsWith("#/tydzien") && S.weekSel && $(".days")) (S.weekUi[S.weekSel] ||= { open: {} }).y = scrollY; }, { passive: true });
 
 function vSoon(m, title, stage) {
   m.innerHTML = `<h2>${title}</h2><div class="card muted">Ten ekran pojawi się w etapie ${stage}. Teraz (v${APP_VERSION}) działa plan tygodnia, ekran Dziś, przepisy, profile oraz import i eksport.</div>`;
@@ -173,6 +177,66 @@ function vRecipes(m) {
   draw();
 }
 
+// ---------- desery: do listy zakupów i do planu dnia ----------
+const MULTS = [[0.5, "½ całości"], [1, "Całość"], [2, "2 × całość"]];
+const multTxt = (x) => (MULTS.find(m => m[0] === x)?.[1] || `×${fmt(x, 1)}`).toLowerCase();
+function openDessertShop(rid) {
+  const r = S.recipes[rid]; ensureLists();
+  const lists = Object.entries(S.shop.lists || {}).filter(([, l]) => l.status !== "zamknieta").sort((a, b) => (b[1].createdAt || "").localeCompare(a[1].createdAt || ""));
+  const st = { list: lists[0]?.[0] || "_new", mult: 1 };
+  const d = sheet(`<h3>🛒 ${esc(r.name)} – do listy zakupów</h3>
+    <label class="small">Lista<select id="dsList" style="width:100%">${lists.map(([id, l]) => `<option value="${id}">${esc(l.name)}</option>`).join("")}<option value="_new">+ nowa lista „Desery”</option></select></label>
+    <div class="seg" id="dsMult">${MULTS.map(([v, n]) => `<button data-m="${v}" class="${v === 1 ? "on" : ""}">${n}</button>`).join("")}</div>
+    <p class="small muted">${yieldOf(r) ? `Całość = ${yieldOf(r)} porcji.` : "Liczba porcji z całości nieustawiona – liczę ilość z przepisu."} Pozycje dostaną dopisek „do: ${esc(r.name)}”; „Przelicz” ich nie usuwa.</p>
+    <div class="row"><button class="btn primary" id="dsGo">Dodaj</button><button class="btn" id="shClose">Anuluj</button></div>`);
+  d.querySelector("#shClose").onclick = closeSheet;
+  d.querySelector("#dsList").value = st.list; d.querySelector("#dsList").onchange = (e) => st.list = e.target.value;
+  d.querySelectorAll("[data-m]").forEach(b => b.onclick = () => { st.mult = +b.dataset.m; d.querySelectorAll("[data-m]").forEach(x => x.classList.toggle("on", x === b)); });
+  d.querySelector("#dsGo").onclick = () => {
+    const items = SH.dessertItems(r, rid, st.mult, S.products, rid + Date.now().toString(36));
+    let lid = st.list;
+    if (lid === "_new") { lid = be.newListId(); bg(be.createList(lid, { name: "Desery", createdAt: new Date().toISOString(), createdBy: S.user.email, createdByName: S.user.name || S.user.email,
+      range: null, slots: null, status: "aktywna" }, items)); }
+    else bg(be.writeItems(lid, items, []));
+    closeSheet(); toast(`Dodano ${Object.keys(items).length} pozycji: ${r.name} (${multTxt(st.mult)})`, "ok");
+  };
+}
+function openDessertPlan(rid) {
+  const r = S.recipes[rid]; const today = todayYmd(); const days = [...Array(14)].map((_, i) => W.addDays(today, i));
+  const st = { date: days.find(x => W.dayNum(x) === 7) || today, mult: 1 };
+  const d = sheet(`<h3>📅 ${esc(r.name)} – zaplanuj</h3>
+    <div class="row tight daypick">${days.map(x => `<button class="btn small ${x === st.date ? "primary" : ""}" data-dd="${x}">${DAY_NAMES[W.dayNum(x)]} ${dLabel(x)}</button>`).join("")}</div>
+    <div class="seg">${MULTS.map(([v, n]) => `<button data-m="${v}" class="${v === 1 ? "on" : ""}">${n}</button>`).join("")}</div>
+    <p class="small muted">Deser pojawi się w planie dnia jako „poza bilansem”, a lista zakupów z planu uwzględni jego składniki.</p>
+    <div class="row"><button class="btn primary" id="dpGo">Zaplanuj</button><button class="btn" id="shClose">Anuluj</button></div>`);
+  d.querySelector("#shClose").onclick = closeSheet;
+  d.querySelectorAll("[data-dd]").forEach(b => b.onclick = () => { st.date = b.dataset.dd; d.querySelectorAll("[data-dd]").forEach(x => x.classList.toggle("primary", x === b)); });
+  d.querySelectorAll("[data-m]").forEach(b => b.onclick = () => { st.mult = +b.dataset.m; d.querySelectorAll("[data-m]").forEach(x => x.classList.toggle("on", x === b)); });
+  d.querySelector("#dpGo").onclick = async () => {
+    const sat = W.saturdayOf(st.date);
+    const w = S.week.sat === sat && S.week.data ? structuredClone(S.week.data) : await be.getWeek(sat).catch(() => null);
+    if (!w) return toast(`Brak planu na tydzień od ${dLabel(sat)} – najpierw go wygeneruj`, "err");
+    const de = W.addDessert(w, st.date, rid, st.mult, S.user.email);
+    if (S.week.sat === sat) S.week.data = w;
+    closeSheet(); toast(`Zaplanowano: ${r.name} – ${DAY_NAMES[W.dayNum(st.date)]} ${dLabel(st.date)}`, "ok");
+    bg(be.updateMeals(sat, [{ date: st.date, slot: "deser", meal: de }], { updatedAt: new Date().toISOString(), updatedBy: S.user.email }));
+  };
+}
+function dessertHtml(w, d) {
+  const items = w.days[d]?.deser?.items || []; if (!items.length) return "";
+  return `<div class="slot dessert"><div class="sh">Deser <span class="muted small">poza bilansem</span></div>
+    ${items.map((it, i) => `<div class="sl person one"><div class="ml"><span class="mn">🍰 <a href="#/przepis/${it.rid}">${esc(rName(it.rid))}</a></span><span class="mm">${multTxt(it.mult)}${yieldOf(S.recipes[it.rid]) ? ` · ${fmt(yieldOf(S.recipes[it.rid]) * it.mult)} porcji` : ""}</span></div>
+      <button class="btn small dots" data-dx="${d}|${i}" aria-label="Usuń deser">✕</button></div>`).join("")}</div>`;
+}
+function bindDessertRemove(m, w) {
+  m.querySelectorAll("[data-dx]").forEach(b => b.onclick = () => {
+    const [d, i] = b.dataset.dx.split("|"); const it = w.days[d].deser.items[+i];
+    if (!confirm(`Usunąć deser „${rName(it.rid)}” z planu?`)) return;
+    const w2 = structuredClone(S.week.data); const de = W.removeDessert(w2, d, +i); S.week.data = w2;
+    bg(be.updateMeals(w2.start, [{ date: d, slot: "deser", meal: de }], { updatedAt: new Date().toISOString(), updatedBy: S.user.email })); route();
+  });
+}
+
 // Rozpiska ilości: „Gotujesz 4 porcje na sob + nd: Jacek ×1,00 + ×1,00 · Agata … = ×3,90 przepisu”
 function cookTxt(cook) {
   const by = {}; for (const r of cook.rows) (by[r.pid] ||= []).push(r.scale);
@@ -184,7 +248,7 @@ function vRecipe(m, id, cx = null) {
   if (!r) { m.innerHTML = `<div class="card">Nie znaleziono przepisu.</div>`; return; }
   const P = S.portion;
   const ckey = id + (cx ? `/${cx.date}/${cx.slot}/${cx.pid}` : "");
-  if (P.recipe !== ckey) { P.recipe = ckey; P.slot = ""; P.who = "me"; P.days = "day"; P.base = false;
+  if (P.recipe !== ckey) { P.recipe = ckey; P.slot = ""; P.who = "me"; P.days = "day"; P.base = false; P.dm = "";
     if (cx) { P.profile = cx.pid || S.invite.profileId; P.slot = cx.slot;
       const mm = S.week.data?.days?.[cx.date]?.[cx.slot]; // we wspólnym posiłku „dla mnie” = zalogowana osoba, jeśli je
       if (mm?.mode === "shared" && W.participants(mm).includes(S.invite.profileId)) P.profile = S.invite.profileId; } }
@@ -213,13 +277,25 @@ function vRecipe(m, id, cx = null) {
   if (cookCtx && !P.base && (P.who === "all" || P.days === "block")) {
     cook = W.cookingScales(wk, ctxW, cx.date, cx.slot, P.days, P.who === "me" ? mePid : cx.pid, P.who);
     ps = { scale: cook.total, raw: cook.total, ok: true }; }
+  // desery: poza bilansem, ilość w porcjach / całościach (yield = liczba porcji z całości)
+  const isDes = r.category === "deser"; let dessertHtml = "";
+  if (isDes) {
+    const Y = yieldOf(r) || 0;
+    const dOpts = Y ? [["p", 1, "1 porcja"], ["h", Y / 2, "½ całości"], ["c", Y, `Całość (${Y} porcji)`], ["d", Y * 2, "2 × całość"]] : [["p", 1, "Ilość z przepisu"]];
+    if (!dOpts.some(o => o[0] === P.dm)) P.dm = Y ? "c" : "p";
+    ps = { scale: dOpts.find(o => o[0] === P.dm)[1], raw: 1, ok: true }; cook = null;
+    dessertHtml = `<div class="card portion"><div class="small">🍰 Deser · poza bilansem kcal${Y ? ` · wychodzi ${Y} porcji · 1 porcja ≈ ${fmt(base.kcal)} kcal`
+      : ` · ${isAdmin() ? "ustaw w edytorze („Wychodzi porcji”), ile porcji daje całość" : "liczba porcji z całości nieustawiona"}`}</div>
+      ${dOpts.length > 1 ? `<div class="seg">${dOpts.map(([v, , n]) => `<button class="${P.dm === v ? "on" : ""}" data-dm="${v}">${n}</button>`).join("")}</div>` : ""}
+      <div class="row tight"><button class="btn small" id="dShop">🛒 Do listy zakupów</button><button class="btn small" id="dPlan">📅 Zaplanuj na dzień</button></div></div>`;
+  }
   const k = ps.scale; const t = Object.fromEntries(Object.entries(base).map(([a, v]) => [a, v * k]));
   const blocked = profileList().filter(([, p]) => (p.exclusions?.families || []).some(x => fam.includes(x)));
   const mine = (prof?.exclusions?.families || []).filter(x => fam.includes(x));
   m.innerHTML = `<a href="${cx ? "javascript:history.back()" : "#/przepisy"}" class="back">← ${cx ? "Wróć do planu" : "Przepisy"}</a>
     <h2>${esc(r.name)}${isAdmin() ? ` <button class="btn small" id="rEdit">✏️ Edytuj</button>` : ""}</h2>
     <div class="meta">${r.status && r.status !== "aktywny" ? `<span class="badge">${esc(STATUS_NAMES[r.status] || r.status)}</span> ` : ""}${CATEGORY_NAMES[r.category]}${r.timeMin ? ` · ${r.timeMin} min` : ""} · ${esc(r.source)} ${(r.tags || []).map(x => `<span class="tag ${x}">${TAG_NAMES[x] || x}</span>`).join("")}</div>
-    <div class="card portion">
+    ${isDes ? dessertHtml : `    <div class="card portion">
       ${whoOpts.length ? `<div class="seg">${whoOpts.map(([v, n]) => `<button class="${P.who === v ? "on" : ""}" data-who="${v}">${n}</button>`).join("")}</div>` : ""}
       ${daysOpts.length ? `<div class="seg">${daysOpts.map(([v, n]) => `<button class="${P.days === v ? "on" : ""}" data-days="${v}">${n}</button>`).join("")}</div>` : ""}
       ${canJoin ? `<div class="row tight"><button class="btn small" id="pJoin">➕ Dołącz domownika</button>${cDay.rows.length > 1 ? `<span class="muted small">Przy stole: ${cDay.rows.map(r => esc(S.profiles[r.pid]?.name)).join(", ")}</span>` : ""}</div>` : ""}
@@ -232,18 +308,24 @@ function vRecipe(m, id, cx = null) {
       <div class="small ${ps.ok ? "muted" : "warntext"}">${P.base ? `Porcja bazowa przepisu: ${fmt(base.kcal)} kcal.` :
         `Porcja dla: <b>${esc(prof?.name)}</b> · ${SLOT_NAMES[P.slot]} ${target} kcal · skala ×${fmt(k, 2)}${ps.ok ? "" : ` – poza zakresem ${fmt(lim.min, 1)}–${fmt(lim.max, 1)}: przepis słabo pasuje do tego posiłku`}`}</div>`}
     </div>
+`}
     ${mine.length ? `<div class="warn"><b>${esc(prof.name)}</b> wyklucza: ${mine.map(x => FAMILY_NAMES[x] || x).join(", ")} – ten przepis nie będzie proponowany tej osobie.</div>`
       : blocked.length ? `<div class="note">Zawiera: ${fam.map(x => FAMILY_NAMES[x] || x).join(", ")} – nie dla: ${blocked.map(([, p]) => esc(p.name)).join(", ")}</div>` : ""}
     <div class="stats"><div><b>${fmt(t.kcal)}</b>kcal</div><div><b>${fmt(t.p)}</b>białko g</div><div><b>${fmt(t.f)}</b>tłuszcz g</div><div><b>${fmt(t.c)}</b>węgl. g</div><div><b>${fmt(t.fe, 1)}</b>żelazo mg</div></div>
     <div class="card"><h3>Składniki</h3>
       <ul class="ing">${r.ingredients.map(x => { const p = S.products[x.p]; return `<li><span>${esc(p?.name || x.p)}</span><span>${esc(formatAmount(x, p, k))}</span></li>`; }).join("")}</ul></div>
     <div class="card"><h3>Przygotowanie</h3><p>${esc(r.steps)}</p></div>
-    <p class="muted small">Porcja bazowa ${fmt(base.kcal)} kcal (wyliczone z gramatur; źródło podawało ${r.sourceKcal ?? "–"} kcal). Id: ${id}, wersja ${r.rev}.</p>`;
+    <p class="muted small">Porcja bazowa ${fmt(base.kcal)} kcal (wyliczone z gramatur; źródło podawało ${r.sourceKcal ?? "–"} kcal). Id: ${id}, wersja ${r.rev}.</p>
+    <p><button class="btn small" id="rNote">💬 Uwaga do tego przepisu</button></p>`;
   const again = () => vRecipe(m, id, cx);
   m.querySelectorAll("[data-who]").forEach(b => b.onclick = () => { P.who = b.dataset.who; again(); });
   m.querySelectorAll("[data-days]").forEach(b => b.onclick = () => { P.days = b.dataset.days; again(); });
   if ($("#pJoin")) $("#pJoin").onclick = () => { P.who = "all"; openJoin(cx.date, cx.slot, joinHost); };
   if ($("#rEdit")) $("#rEdit").onclick = () => { location.hash = `#/edytuj/${id}`; };
+  m.querySelectorAll("[data-dm]").forEach(b => b.onclick = () => { P.dm = b.dataset.dm; again(); });
+  if ($("#dShop")) $("#dShop").onclick = () => openDessertShop(id);
+  if ($("#dPlan")) $("#dPlan").onclick = () => openDessertPlan(id);
+  $("#rNote").onclick = () => N.openNoteForm(notesApi(), { label: `przepis: ${r.name}`, ref: `#/przepis/${id}` });
   if ($("#pProf")) {
     $("#pProf").onchange = (e) => { P.profile = e.target.value; P.slot = ""; again(); };
     $("#pSlot").onchange = (e) => { P.slot = e.target.value; again(); };
@@ -344,12 +426,18 @@ function vWeek(m, arg) {
     m.innerHTML = `<h2>Plan tygodnia</h2>${head}<div class="days">${W.weekDates(sat).map(d => {
       const slots = SLOTS.filter(sl => w.days[d]?.[sl] && (!only || w.days[d][sl].per[only]));
       const sum = only ? dayKcal(w, d, only) : null;
-      return `<details class="day card" ${d === today || (!W.weekDates(sat).includes(today) && d === sat) || matchMedia("(min-width:900px)").matches ? "open" : ""}>
+      const ui = S.weekUi[sat]?.open?.[d];
+      const isOpen = ui !== undefined ? ui : d === today || (!W.weekDates(sat).includes(today) && d === sat) || matchMedia("(min-width:900px)").matches;
+      return `<details class="day card" data-d="${d}" ${isOpen ? "open" : ""}>
         <summary><b>${DAY_FULL[W.dayNum(d)]}</b> ${dLabel(d)}${d === today ? ` <span class="badge sh2">dziś</span>` : ""}${sum ? ` <span class="muted small">· ${sum.kcal} / ${sum.target} kcal</span>` : ""}</summary>
-        ${slots.map(sl => slotHtml(w, d, sl, only)).join("") || `<p class="muted small">Brak posiłków.</p>`}</details>`; }).join("")}</div>
+        ${slots.map(sl => slotHtml(w, d, sl, only)).join("") || `<p class="muted small">Brak posiłków.</p>`}${dessertHtml(w, d)}</details>`; }).join("")}</div>
       <p class="muted small">Wygenerowano: ${w.generatedAt ? new Date(w.generatedAt).toLocaleString("pl-PL") : "—"}${w.updatedBy ? ` · ostatnia zmiana: ${esc(w.updatedBy)}` : ""}</p>`;
   }
   $("#wProf").onchange = (e) => { S.weekProfile = e.target.value; route(); };
+  const ui = S.weekUi[sat] ||= { open: {}, y: 0 };
+  if (w) bindDessertRemove(m, w);
+  m.querySelectorAll("details.day").forEach(dd => dd.addEventListener("toggle", () => { ui.open[dd.dataset.d] = dd.open; }));
+  if (w) S.restoreY = ui.y || 0;
   if ($("#gen")) $("#gen").onclick = () => generate(sat);
   m.querySelectorAll("[data-act]").forEach(b => b.onclick = () => { const [d, sl, pid] = b.dataset.act.split("|"); openActions(d, sl, pid); });
 }
@@ -454,7 +542,9 @@ function vToday(m) {
         <div class="sl"><div class="ml">${mealLine(w, today, sl, pid)}</div></div>
         <div class="row tight">${e.extra ? "" : `<button class="btn small" data-out="${sl}">${e.outside ? "Jednak w domu" : "Jem poza domem"}</button>`}
         <button class="btn small" data-act="${today}|${sl}|${mm.mode === "shared" ? "" : pid}">⋯ więcej</button></div></div>`; }).join("")}</div>
+    ${dessertHtml(w, today) ? `<div class="card tslot">${dessertHtml(w, today)}</div>` : ""}
     <p><a href="#/tydzien">Cały tydzień →</a></p>`;
+  bindDessertRemove(m, w);
   $("#tProf").onchange = (e) => { S.todayProfile = e.target.value; route(); };
   m.querySelectorAll("[data-act]").forEach(b => b.onclick = () => { const [d, sl, p2] = b.dataset.act.split("|"); openActions(d, sl, p2); });
   m.querySelectorAll("[data-out]").forEach(b => b.onclick = async () => {
@@ -466,7 +556,7 @@ function vToday(m) {
 }
 
 // ---------- listy zakupów (M4) ----------
-const SLOT_SHORT = { sniadanie: "śn", ii_sniadanie: "II śn", obiad: "obiad", przekaska: "przek", kolacja: "kol" };
+const SLOT_SHORT = { sniadanie: "śn", ii_sniadanie: "II śn", obiad: "obiad", przekaska: "przek", kolacja: "kol", deser: "🍰 deser" };
 function ensureLists() {
   if (S.shop.unsubL) return;
   S.shop.unsubL = be.watchLists((d) => {
@@ -508,7 +598,8 @@ function addManual(x) {
 }
 const bg = (p) => p.catch(e => toast("Błąd zapisu: " + (e.code || e.message), "err")); // zapis w tle (działa offline)
 const rangeTxt = (l) => l.range ? `${DAY_NAMES[W.dayNum(l.range.from)]} ${dLabel(l.range.from)} – ${DAY_NAMES[W.dayNum(l.range.to)]} ${dLabel(l.range.to)}` : "lista ręczna";
-const slotsTxt = (l) => !l.range ? "własne pozycje" : !l.slots || l.slots.length === SLOTS.length ? "wszystkie posiłki" : l.slots.map(x => SLOT_NAMES[x]).join(", ");
+const slotsTxt = (l) => !l.range ? "własne pozycje" : (!l.slots || l.slots.length === SLOTS.length ? "wszystkie posiłki" : l.slots.map(x => SLOT_NAMES[x]).join(", "))
+  + (l.people ? ` · dla: ${l.people.map(p => esc(pName(p))).join(", ")}` : "");
 async function weeksFor(from, to) {
   const out = {};
   for (const sat of SH.saturdaysIn(from, to)) out[sat] = S.week.sat === sat && S.week.data !== undefined ? S.week.data : await be.getWeek(sat).catch(() => null);
@@ -538,11 +629,13 @@ function vShopping(m) {
 function openNewList() {
   const today = todayYmd(); const sat = W.saturdayOf(today);
   const presets = { tw: [sat, W.addDays(sat, 6), "Ten tydzień"], dz: [today, W.addDays(sat, 6), "Od dziś do pt"], nt: [W.addDays(sat, 7), W.addDays(sat, 13), "Następny tydzień"] };
-  const st = { from: today === sat ? sat : today, to: W.addDays(sat, 6), slots: [...SLOTS] };
+  const st = { from: today === sat ? sat : today, to: W.addDays(sat, 6), slots: [...SLOTS], people: profileList().map(([k]) => k), desserts: true };
   const d = sheet(`<h3>Nowa lista z planu</h3>
     <div class="row tight">${Object.entries(presets).map(([k, [, , n]]) => `<button class="btn small" data-pr="${k}">${n}</button>`).join("")}</div>
     <div class="row tight"><label>Od <input type="date" id="nlFrom"></label><label>Do <input type="date" id="nlTo"></label></div>
-    <div class="small muted">Posiłki:</div><div class="row tight">${SLOTS.map(sl => `<label class="chk"><input type="checkbox" data-nls="${sl}" checked> ${SLOT_NAMES[sl]}</label>`).join("")}</div>
+    <div class="small muted">Posiłki:</div><div class="row tight">${SLOTS.map(sl => `<label class="chk"><input type="checkbox" data-nls="${sl}" checked> ${SLOT_NAMES[sl]}</label>`).join("")}
+      <label class="chk"><input type="checkbox" id="nlDes" checked> Desery z planu</label></div>
+    <div class="small muted">Dla kogo:</div><div class="row tight">${profileList().map(([k, p]) => `<label class="chk"><input type="checkbox" data-nlp="${k}" checked> ${esc(p.name)}</label>`).join("")}</div>
     <label class="small">Nazwa <input id="nlName" style="width:100%"></label>
     <div id="nlInfo" class="small muted"></div>
     <div class="row"><button class="btn primary" id="nlGo">Utwórz listę</button><button class="btn" id="shClose">Anuluj</button></div>`);
@@ -554,18 +647,22 @@ function openNewList() {
   d.querySelector("#nlFrom").onchange = (e) => { st.from = e.target.value; if (st.to < st.from) st.to = st.from; sync(); };
   d.querySelector("#nlTo").onchange = (e) => { st.to = e.target.value; if (st.to < st.from) st.from = st.to; sync(); };
   d.querySelectorAll("[data-nls]").forEach(c => c.onchange = () => { st.slots = SLOTS.filter(sl => d.querySelector(`[data-nls="${sl}"]`).checked); });
+  d.querySelectorAll("[data-nlp]").forEach(c => c.onchange = () => { st.people = profileList().map(([k]) => k).filter(k => d.querySelector(`[data-nlp="${k}"]`).checked); });
+  d.querySelector("#nlDes").onchange = (e) => { st.desserts = e.target.checked; };
   d.querySelector("#shClose").onclick = closeSheet;
   d.querySelector("#nlGo").onclick = async () => {
-    if (!st.slots.length) return toast("Zaznacz co najmniej jeden posiłek", "err");
+    if (!st.slots.length && !st.desserts) return toast("Zaznacz co najmniej jeden posiłek", "err");
+    if (!st.people.length) return toast("Zaznacz co najmniej jedną osobę", "err");
     if (W.daysBetween(st.from, st.to) > 20) return toast("Zakres najwyżej 3 tygodnie", "err");
     d.querySelector("#nlGo").disabled = true;
     const weeks = await weeksFor(st.from, st.to);
-    const { need, missing } = SH.computeNeeds(weeks, S.recipes, st);
+    const allP = st.people.length === profileList().length;
+    const { need, missing } = SH.computeNeeds(weeks, S.recipes, { ...st, people: allP ? null : st.people });
     const items = SH.buildItems(need, S.products);
     if (!Object.keys(items).length) { d.querySelector("#nlGo").disabled = false; return toast(missing.length ? "Brak planu na wybrane dni – najpierw wygeneruj tydzień" : "Nic do kupienia w tym zakresie", "err"); }
     const id = be.newListId(); const now = new Date().toISOString();
     bg(be.createList(id, { name: d.querySelector("#nlName").value.trim() || "Zakupy", createdAt: now, createdBy: S.user.email, createdByName: S.user.name || S.user.email,
-      range: { from: st.from, to: st.to }, slots: st.slots, status: "aktywna", recalcAt: now }, items));
+      range: { from: st.from, to: st.to }, slots: st.slots, people: allP ? null : st.people, desserts: st.desserts, status: "aktywna", recalcAt: now }, items));
     closeSheet(); location.hash = `#/zakupy/${id}`;
     if (missing.length) toast(`Bez planu: ${missing.map(x => DAY_NAMES[W.dayNum(x)] + " " + dLabel(x)).join(", ")} – te dni pominięto`, "err");
     else toast(`Lista utworzona: ${Object.keys(items).length} pozycji`, "ok");
@@ -574,10 +671,11 @@ function openNewList() {
 
 function itemRow(id, it) {
   const done = it.checked && !it.more;
-  const src = (it.sources || []).map(x => `${DAY_NAMES[W.dayNum(x.date)]} ${SLOT_SHORT[x.slot] || x.slot}: ${esc(rName(x.recipeId))}`);
+  const src = (it.sources || []).map(x => `${x.date ? DAY_NAMES[W.dayNum(x.date)] + " " : ""}${SLOT_SHORT[x.slot] || x.slot}: ${esc(rName(x.recipeId))}`);
   return `<div class="sitem ${done ? "done" : ""} ${it.gone ? "gone" : ""}">
     <button class="ck" data-ck="${id}" aria-label="Kupione">${done ? "☑" : "☐"}</button>
     <div class="nm" data-src="${id}"><b>${esc(it.name)}</b> <span class="amt">${esc(it.amount || "")}</span>
+      ${it.dessert ? `<span class="muted small"> · do: ${esc(it.dessert)}</span>` : ""}
       ${it.more ? `<span class="warntext small"> · dokup ~${fmt(Math.ceil(it.more / 5) * 5)} g (plan się zmienił)</span>` : ""}
       ${it.gone ? `<span class="muted small"> · już niepotrzebne (plan się zmienił)</span>` : ""}
       ${S.shop.open[id] && src.length ? `<div class="small muted src">${src.join("<br>")}</div>` : ""}
@@ -651,7 +749,7 @@ function vShopList(m, id) {
 
 async function recalcList(id, l, items) {
   const weeks = await weeksFor(l.range.from, l.range.to);
-  const { need, missing } = SH.computeNeeds(weeks, S.recipes, { from: l.range.from, to: l.range.to, slots: l.slots || SLOTS });
+  const { need, missing } = SH.computeNeeds(weeks, S.recipes, { from: l.range.from, to: l.range.to, slots: l.slots || SLOTS, people: l.people || null, desserts: l.desserts !== false });
   const { upserts, deletes, stats } = SH.mergeItems(items, SH.buildItems(need, S.products));
   if (!Object.keys(upserts).length && !deletes.length) return toast("Lista jest aktualna", "ok");
   for (const dd of deletes) delete items[dd]; Object.assign(items, structuredClone(upserts)); rerenderShop();
@@ -724,6 +822,8 @@ function vMore(m) {
   m.innerHTML = `<h2>Więcej</h2>
     <div class="card"><h3>Zalogowano</h3><p>${esc(S.user.name)} · ${esc(S.user.email)}<br>Profil: <b>${esc(me?.name || "—")}</b> · rola: ${isAdmin() ? "administrator" : "domownik"}</p>
       <button class="btn" id="logout">Wyloguj</button></div>
+    <div class="card"><h3>Uwagi i pomysły</h3><p class="small muted">Coś nie działa albo masz pomysł? Zapisz – trafi do wspólnej listy w aplikacji.</p>
+      <div class="row tight"><button class="btn primary" id="noteAdd">💬 Zgłoś uwagę</button><a class="btn" href="#/uwagi" id="noteList">Lista uwag${S.notes ? ` (${Object.values(S.notes).filter(n => n.status === "nowa").length} nowe)` : ""}</a></div></div>
     <div class="card"><h3>Profile rodziny</h3>
       <div class="profiles">${profileList().map(([id, p]) => `<div class="prof">${canEdit(id) ? `<a class="btn small edit" href="#/profil/${id}">Edytuj</a>` : ""}<div><b>${esc(p.name)}</b>${p.flags?.ironRich ? ` <span class="tag zelazo">Fe+</span>` : ""}${p.uid ? "" : ` <span class="muted small">(bez konta)</span>`} · ${p.kcalTarget} kcal</div>
         <div class="small">${slotsOf(p).map(s => `${SLOT_NAMES[s]} ${p.slots[s]}%`).join(" · ")}</div>
@@ -732,6 +832,8 @@ function vMore(m) {
     ${isAdmin() ? rulesHtml() + adminHtml() : ""}
     <div class="card muted small">Wersja aplikacji ${APP_VERSION} (${APP_STAGE}) · produkty ${S.config.versions?.products || "—"} · przepisy ${S.config.versions?.recipes || "—"}</div>`;
   $("#logout").onclick = () => be.signOut();
+  $("#noteAdd").onclick = () => N.openNoteForm(notesApi(), null);
+  N.ensureNotes(notesApi(), () => { const a = $("#noteList"); if (a && S.notes) a.textContent = `Lista uwag (${Object.values(S.notes).filter(n => n.status === "nowa").length} nowe)`; });
   if (isAdmin()) { bindAdmin(); bindRules(); }
 }
 
@@ -811,7 +913,7 @@ function adminHtml() {
         <label class="btn">Wybierz plik przepisów…<input type="file" accept=".json" id="fRec" hidden></label></div>
       <div id="impOut"></div></details>
     <details class="card"><summary>Kopia zapasowa</summary><p class="muted small">Stan bazy: ${Object.keys(S.products).length} produktów, ${Object.keys(S.recipes).length} przepisów.
-      Kopia zawiera ustawienia, profile (z wykluczeniami i preferencjami), produkty, przepisy, plany tygodni, listy zakupów i podpowiedzi.</p>
+      Kopia zawiera ustawienia, profile (z wykluczeniami i preferencjami), produkty, przepisy, plany tygodni, listy zakupów, podpowiedzi i uwagi.</p>
       <div class="row"><button class="btn" id="export">Pobierz kopię (JSON)</button>
         <label class="btn">Przywróć z kopii…<input type="file" accept=".json" id="fRestore" hidden></label></div></details>`;
 }
@@ -883,11 +985,11 @@ function importRecipes(json) {
 }
 
 async function exportBackup() {
-  let weeks = {}, shopping = {};
-  try { weeks = await be.listWeeks(); shopping = await be.dumpShopping(); }
+  let weeks = {}, shopping = {}, notes = {};
+  try { weeks = await be.listWeeks(); shopping = await be.dumpShopping(); notes = await be.listNotes(); }
   catch (e) { toast("Nie udało się pobrać planów/list: " + (e.code || e.message) + " – kopia bez nich", "err"); }
   const data = { kind: "kopia", schema: 2, appVersion: APP_VERSION, exportedAt: new Date().toISOString(),
-    config: S.config, profiles: S.profiles, products: S.products, recipes: S.recipes, weeks, shopping };
+    config: S.config, profiles: S.profiles, products: S.products, recipes: S.recipes, weeks, shopping, notes };
   const a = document.createElement("a");
   a.href = URL.createObjectURL(new Blob([JSON.stringify(data, null, 1)], { type: "application/json" }));
   a.download = `kopia-dieta-${new Date().toISOString().slice(0, 10)}.json`; a.click();
@@ -904,6 +1006,7 @@ function openRestore(json) {
     ["cfg", "Ustawienia i profile", `zaproszenia, reguły tygodnia, ${Object.keys(json.profiles).length} profili${meAdmin ? "" : " – <b class='warntext'>niedostępne: w kopii nie jesteś administratorem</b>"}`, meAdmin],
     ["db", "Produkty i przepisy", `produkty: ${Object.keys(json.products || {}).length}, przepisy: ${Object.keys(json.recipes || {}).length} – zastąpią obecne (${Object.keys(S.products).length} / ${Object.keys(S.recipes).length})`, !!json.products],
     ["weeks", "Plany tygodni", `tygodnie: ${Object.keys(json.weeks || {}).length} – nadpiszą tygodnie o tych samych datach`, !!Object.keys(json.weeks || {}).length],
+    ["notes", "Uwagi i pomysły", `uwagi: ${Object.keys(json.notes || {}).length} – nadpiszą uwagi o tych samych id`, !!Object.keys(json.notes || {}).length],
     ["shop", "Listy zakupów i podpowiedzi", `listy: ${lists.length}, podpowiedzi: ${mem} – nadpiszą listy o tych samych id`, !!(lists.length || mem)]];
   const d = sheet(`<h3>Przywróć z kopii</h3>
     <p class="small muted">Kopia z ${json.exportedAt ? new Date(json.exportedAt).toLocaleString("pl-PL") : "?"} (wersja aplikacji ${esc(json.appVersion || "?")}). Zaznacz, co przywrócić. Rzeczy spoza kopii (np. nowsze tygodnie) zostają.</p>
@@ -921,6 +1024,7 @@ function openRestore(json) {
         for (const [id, it] of Object.entries(items)) (chunks[chunkOf(it)] ||= { items: {} }).items[id] = it;
         for (const [cid, c] of Object.entries(chunks)) await be.setChunk(coll, cid, c);
       }
+      if (sel.has("notes")) for (const [id, n] of Object.entries(json.notes)) await be.setNote(id, n);
       if (sel.has("weeks")) for (const [sat, w] of Object.entries(json.weeks)) await be.setWeek(sat, w);
       if (sel.has("shop")) {
         for (const id of lists) { const { _items, ...data } = json.shopping[id]; if (S.shop.lists?.[id]) await be.deleteList(id); await be.createList(id, data, _items || {}); }
@@ -934,7 +1038,7 @@ function openRestore(json) {
 // ---------- uruchomienie ----------
 be.onAuth(async (u) => {
   S.user = u;
-  if (!u) { S.config = null; if (S.week.unsub) S.week.unsub(); S.week = { sat: null, data: undefined, unsub: null }; return renderLogin(); }
+  if (!u) { S.config = null; if (S.notesUnsub) { S.notesUnsub(); S.notesUnsub = null; S.notes = undefined; } if (S.week.unsub) S.week.unsub(); S.week = { sat: null, data: undefined, unsub: null }; return renderLogin(); }
   screen(`<div class="center"><p class="muted">Wczytywanie…</p></div>`);
   await boot();
 });

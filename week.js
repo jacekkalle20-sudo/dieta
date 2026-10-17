@@ -1,4 +1,4 @@
-// week.js – v0.5.0 – tydzień planu (sobota–piątek), generator i operacje na posiłkach (bez zależności od Firebase)
+// week.js – v0.6.0 – tydzień planu (sobota–piątek), generator i operacje na posiłkach (bez zależności od Firebase)
 import { SLOTS } from "./defaults.js";
 import { slotKcal } from "./scaling.js";
 
@@ -118,7 +118,8 @@ function skeleton(ctx, date, slot, old) {
 // ---------- generowanie tygodnia ----------
 export function generateWeek(ctx, existing) {
   const dates = weekDates(ctx.sat); const days = {};
-  for (const d of dates) { days[d] = {}; for (const sl of SLOTS) { const m = skeleton(ctx, d, sl, existing?.days?.[d]?.[sl]); if (Object.keys(m.per).length) days[d][sl] = m; } }
+  for (const d of dates) { days[d] = {}; for (const sl of SLOTS) { const m = skeleton(ctx, d, sl, existing?.days?.[d]?.[sl]); if (Object.keys(m.per).length) days[d][sl] = m; }
+    if (existing?.days?.[d]?.deser?.items?.length) days[d].deser = structuredClone(existing.days[d].deser); } // desery zaplanowane ręcznie zostają
   // zachowanie zablokowanych (ręcznie wybranych) posiłków
   for (const d of dates) for (const sl of SLOTS) {
     const old = existing?.days?.[d]?.[sl]; const m = days[d][sl]; if (!old || !m) continue;
@@ -336,4 +337,14 @@ export function historyFromWeek(week) {
     for (const [pid, p] of Object.entries(m.per || {})) if (p.recipeId && !p.outside) h.push({ date: d, slot: sl, recipeId: p.recipeId, pids: [pid] });
   }
   return h;
+}
+
+// ---------- desery w planie dnia (poza bilansem kcal) ----------
+// days[d].deser = { items: [{ rid, mult, by, at }] }; mult = wielokrotność całości (½, 1, 2)
+export function addDessert(week, date, rid, mult, by, at = new Date().toISOString()) {
+  const day = week.days[date] ||= {}; const de = day.deser ||= { items: [] };
+  de.items.push({ rid, mult, by, at }); return de;
+}
+export function removeDessert(week, date, idx) {
+  const de = week.days[date]?.deser; if (!de) return null; de.items.splice(idx, 1); return de;
 }

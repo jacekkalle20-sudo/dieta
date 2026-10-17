@@ -1,9 +1,10 @@
-// backend-demo.js – v0.5.0 – tryb pokazowy bez Firebase (adres z ?demo=1); dane tylko w pamięci przeglądarki
+// backend-demo.js – v0.6.0 – tryb pokazowy bez Firebase (adres z ?demo=1); dane tylko w pamięci przeglądarki
 // Sprawdza ograniczenia Firestore (brak tablic w tablicach, brak undefined), żeby błędy wychodziły już w demo.
 import { OWNER_EMAIL } from "./config.js";
 
 export function createBackend() {
-  const store = { config: null, profiles: {}, products: {}, recipes: {}, weeks: {}, shopping: {}, items: {} };
+  const store = { config: null, profiles: {}, products: {}, recipes: {}, weeks: {}, shopping: {}, items: {}, uwagi: {} };
+  const nw = []; const nNotes = () => nw.forEach(cb => setTimeout(() => cb(clone(store.uwagi)), 0));
   const lw = []; const iw = {}; let seq = 0;
   const nLists = () => lw.forEach(cb => setTimeout(() => cb(clone(store.shopping)), 0));
   const nItems = (id) => (iw[id] || []).forEach(cb => setTimeout(() => cb(clone(store.items[id] || {})), 0));
@@ -55,6 +56,12 @@ export function createBackend() {
       if (listPatch) { Object.assign(store.shopping[l], clone(listPatch)); nLists(); } nItems(l); },
     async rememberItem(key, entry) { const m = store.shopping._pamiec ||= { items: {} }; m.items[key] = clone(entry); nLists(); },
     async dumpShopping() { const out = clone(store.shopping); for (const id of Object.keys(out)) if (!id.startsWith("_")) out[id]._items = clone(store.items[id] || {}); return out; },
+    watchNotes(cb) { nw.push(cb); setTimeout(() => cb(clone(store.uwagi)), 0); return () => nw.splice(nw.indexOf(cb), 1); },
+    newNoteId: () => "N" + (++seq) + Date.now().toString(36),
+    async setNote(id, d) { store.uwagi[id] = clone(d); nNotes(); },
+    async updateNote(id, p) { Object.assign(store.uwagi[id], clone(p)); nNotes(); },
+    async deleteNote(id) { delete store.uwagi[id]; nNotes(); },
+    async listNotes() { return clone(store.uwagi); },
     async deleteList(id) { delete store.shopping[id]; delete store.items[id]; nLists(); nItems(id); }
   };
 }

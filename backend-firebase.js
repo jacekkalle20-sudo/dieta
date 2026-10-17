@@ -1,4 +1,4 @@
-// backend-firebase.js – v0.5.0 – dostęp do Firebase (Auth + Firestore)
+// backend-firebase.js – v0.6.0 – dostęp do Firebase (Auth + Firestore)
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
 import { getAuth, GoogleAuthProvider, signInWithPopup, signOut as fbSignOut, onAuthStateChanged }
   from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
@@ -77,6 +77,13 @@ export function createBackend() {
         const it = {}; (await getDocs(collection(db, "shopping", d.id, "items"))).forEach(x => it[x.id] = x.data()); out[d.id]._items = it; }
       return out;
     },
+    // ---- uwagi i pomysły ----
+    watchNotes(cb, onErr) { return onSnapshot(collection(db, "uwagi"), (q) => { const out = {}; q.forEach(d => out[d.id] = d.data()); cb(out); }, onErr); },
+    newNoteId: () => doc(collection(db, "uwagi")).id,
+    setNote: (id, data) => setDoc(doc(db, "uwagi", id), data),
+    updateNote: (id, patch) => updateDoc(doc(db, "uwagi", id), patch),
+    deleteNote: (id) => deleteDoc(doc(db, "uwagi", id)),
+    async listNotes() { const out = {}; (await getDocs(collection(db, "uwagi"))).forEach(d => out[d.id] = d.data()); return out; },
     async deleteList(id) {
       const q = await getDocs(collection(db, "shopping", id, "items")); const ids = []; q.forEach(d => ids.push(d.id));
       for (let i = 0; i < ids.length; i += 400) { const b = writeBatch(db); for (const x of ids.slice(i, i + 400)) b.delete(doc(db, "shopping", id, "items", x)); await b.commit(); }

@@ -1,4 +1,4 @@
-// nutrition.js – v0.2.0 – wartości przepisu i formatowanie ilości
+// nutrition.js – v0.2.1 – wartości przepisu i formatowanie ilości
 export function recipeTotals(recipe, products) {
   const t = { kcal: 0, p: 0, f: 0, c: 0, fe: 0 };
   for (const x of recipe.ingredients) {
@@ -28,4 +28,11 @@ export function formatAmount(x, product, scale = 1) {
     if (w) { const n = Math.round(g / w * 2) / 2; return `${grams} g (${String(n).replace(".", ",")} ${key === "szt" ? "szt" : unitTxt[1]})`; }
   }
   return `${grams} g`;
+}
+
+// Liczba porcji z całości (desery): pole yield albo odczyt z opisu „Na całość (16 kawałków)”
+export function yieldOf(recipe) {
+  if (recipe?.yield > 0) return recipe.yield;
+  const m = (recipe?.steps || "").match(/Na całość \((\d+)/i);
+  return m ? +m[1] : null;
 }
