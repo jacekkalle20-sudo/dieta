@@ -1,4 +1,4 @@
-/* styles.css – Dieta dla Rodziny – v0.7.0 */
+/* styles.css – Dieta dla Rodziny – v0.7.1 */
 :root{
   --bg:#F6F3EC; --card:#FFFFFF; --ink:#1F2A26; --muted:#6B756F; --line:#E3DED3;
   --brand:#2F5D50; --brand-ink:#FFFFFF; --accent:#E07A3F; --fe:#8E2C2C; --ok:#2E7D4F; --err:#B3261E;
@@ -172,3 +172,12 @@ h2 .btn.small{vertical-align:middle;margin-left:6px}
 .subhint{color:var(--muted);font-size:.8rem;margin-left:4px}
 .ing li.skipped span:first-child{text-decoration:line-through;color:var(--muted)}
 .rolesel{min-height:28px;padding:0 6px;font-size:.8rem;border-radius:8px}
+/* v0.7.1 – części listy z planu */
+.parts{margin:4px 0}
+.part{display:flex;align-items:center;justify-content:space-between;gap:6px;color:var(--muted);border-bottom:1px dashed var(--line);padding:2px 0}
+.part .ib{min-height:30px;font-size:.9rem}
+.shopbar .btn{padding:0 10px}
+.shopbar{flex-wrap:wrap}
+.shopbar .btn.primary{flex:1 1 100%}
+.shopbar .btn:not(.primary){flex:1 1 0}
+@media (min-width:600px){ .shopbar .btn.primary{flex:1 1 auto} }

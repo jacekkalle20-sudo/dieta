@@ -1,4 +1,4 @@
-// shopping.js – v0.7.0 – lista zakupów: sumowanie składników z planu, opakowania, działy, przeliczanie, tekst do Listonic
+// shopping.js – v0.7.1 – lista zakupów: sumowanie składników z planu, opakowania, działy, przeliczanie, tekst do Listonic
 // Bez zależności od Firebase – testowane w Node.
 import { SLOTS, AISLES } from "./defaults.js";
 import { addDays, saturdayOf, participants, recipeOf, subsFor } from "./week.js";
@@ -178,4 +178,28 @@ export function dessertItems(recipe, rid, mult, products, tag) {
       haveAtHome: false, checked: false, checkedBy: null, checkedAt: null };
   }
   return out;
+}
+
+// ---------- części listy z planu (v0.7.1) ----------
+// Lista może mieć kilka dodań z planu: parts = [{id, from, to, slots, people, desserts}]; starsze listy – pola range/slots/people/desserts
+export function partsOf(list) {
+  if (Array.isArray(list?.parts)) return list.parts;
+  return list?.range ? [{ id: "p0", from: list.range.from, to: list.range.to, slots: list.slots || SLOTS, people: list.people || null, desserts: list.desserts !== false }] : [];
+}
+// Czy nowa część dubluje dni już dodane (te same dni i choć jeden wspólny posiłek i osoba) – wtedy składniki liczyłyby się dwa razy
+export function partOverlap(parts, np) {
+  return parts.find(p => p.from <= np.to && np.from <= p.to
+    && ((p.slots || SLOTS).some(s => (np.slots || SLOTS).includes(s)) || (p.desserts !== false && np.desserts !== false))
+    && (!p.people || !np.people || p.people.some(x => np.people.includes(x)))) || null;
+}
+// Zapotrzebowanie ze wszystkich części (sumowane), dni bez planu – suma
+export function needsForParts(weeks, recipes, parts, products) {
+  const need = {}; const missing = new Set();
+  for (const pt of parts) {
+    const r = computeNeeds(weeks, recipes, { from: pt.from, to: pt.to, slots: pt.slots || SLOTS, people: pt.people || null, desserts: pt.desserts !== false, products });
+    for (const d of r.missing) missing.add(d);
+    for (const [pid, e] of Object.entries(r.need)) { const t = need[pid] ||= { g: 0, sources: [] }; t.g += e.g;
+      for (const s of e.sources) if (!t.sources.some(x => x.date === s.date && x.slot === s.slot && x.recipeId === s.recipeId)) t.sources.push(s); }
+  }
+  return { need, missing: [...missing].sort() };
 }

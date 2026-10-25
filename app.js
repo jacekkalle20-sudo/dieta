@@ -1,4 +1,4 @@
-// app.js – Dieta dla Rodziny – v0.7.0 (zamiany i pomijanie składników w posiłku, role składników, sezonowość, tagi „też na kolację/śniadanie”)
+// app.js – Dieta dla Rodziny – v0.7.1 (dodawanie z planu do istniejącej listy zakupów; v0.7.0: zamiany składników, role, sezonowość)
 import { APP_VERSION, APP_STAGE } from "./version.js";
 import { OWNER_EMAIL } from "./config.js";
 import { defaultConfig, defaultProfiles, CATEGORY_NAMES, TAG_NAMES, FAMILY_NAMES, SLOT_NAMES, DAY_NAMES, productChunkOf, recipeChunkOf } from "./defaults.js";
@@ -641,9 +641,14 @@ function addManual(x) {
   rerenderShop(); setTimeout(() => { $("#lsTxt")?.focus(); drawSug(); }, 0);
 }
 const bg = (p) => p.catch(e => toast("Błąd zapisu: " + (e.code || e.message), "err")); // zapis w tle (działa offline)
-const rangeTxt = (l) => l.range ? `${DAY_NAMES[W.dayNum(l.range.from)]} ${dLabel(l.range.from)} – ${DAY_NAMES[W.dayNum(l.range.to)]} ${dLabel(l.range.to)}` : "lista ręczna";
-const slotsTxt = (l) => !l.range ? "własne pozycje" : (!l.slots || l.slots.length === SLOTS.length ? "wszystkie posiłki" : l.slots.map(x => SLOT_NAMES[x]).join(", "))
-  + (l.people ? ` · dla: ${l.people.map(p => esc(pName(p))).join(", ")}` : "");
+// Opis części listy z planu: „sob 31.10 – pt 6.11 · wszystkie posiłki · dla: Jacek, Agata”
+function partTxt(p) {
+  return `${DAY_NAMES[W.dayNum(p.from)]} ${dLabel(p.from)} – ${DAY_NAMES[W.dayNum(p.to)]} ${dLabel(p.to)} · `
+    + (!p.slots || p.slots.length === SLOTS.length ? "wszystkie posiłki" : p.slots.length ? p.slots.map(x => SLOT_NAMES[x]).join(", ") : "tylko desery")
+    + (p.people ? ` · dla: ${p.people.map(x => esc(pName(x))).join(", ")}` : "");
+}
+const rangeTxt = (l) => { const ps = SH.partsOf(l); return !ps.length ? "lista ręczna" : ps.length === 1 ? partTxt(ps[0]).split(" · ")[0] : `${ps.length} dodania z planu`; };
+const slotsTxt = (l) => { const ps = SH.partsOf(l); return !ps.length ? "własne pozycje" : ps.length === 1 ? partTxt(ps[0]).split(" · ").slice(1).join(" · ") : ps.map(p => partTxt(p).split(" · ")[0]).join("; "); };
 async function weeksFor(from, to) {
   const out = {};
   for (const sat of SH.saturdaysIn(from, to)) out[sat] = S.week.sat === sat && S.week.data !== undefined ? S.week.data : await be.getWeek(sat).catch(() => null);
@@ -670,21 +675,26 @@ function vShopping(m) {
   };
 }
 
-function openNewList() {
+// Okno „z planu”: nowa lista (listId = null) albo dodanie do istniejącej listy
+function openNewList(listId = null) {
   const today = todayYmd(); const sat = W.saturdayOf(today);
+  const L0 = listId ? S.shop.lists?.[listId] : null; const parts0 = listId ? SH.partsOf(L0) : [];
   const presets = { tw: [sat, W.addDays(sat, 6), "Ten tydzień"], dz: [today, W.addDays(sat, 6), "Od dziś do pt"], nt: [W.addDays(sat, 7), W.addDays(sat, 13), "Następny tydzień"] };
   const st = { from: today === sat ? sat : today, to: W.addDays(sat, 6), slots: [...SLOTS], people: profileList().map(([k]) => k), desserts: true };
-  const d = sheet(`<h3>Nowa lista z planu</h3>
+  // przy dodawaniu: domyślnie pierwszy tydzień, którego lista jeszcze nie ma
+  if (listId && parts0.length) { const last = parts0.map(p => p.to).sort().pop(); if (last >= st.to) { st.from = W.addDays(last, 1); st.to = W.addDays(W.saturdayOf(st.from), 6); } }
+  const d = sheet(`<h3>${listId ? `➕ Dodaj z planu do: ${esc(L0.name)}` : "Nowa lista z planu"}</h3>
     <div class="row tight">${Object.entries(presets).map(([k, [, , n]]) => `<button class="btn small" data-pr="${k}">${n}</button>`).join("")}</div>
     <div class="row tight"><label>Od <input type="date" id="nlFrom"></label><label>Do <input type="date" id="nlTo"></label></div>
     <div class="small muted">Posiłki:</div><div class="row tight">${SLOTS.map(sl => `<label class="chk"><input type="checkbox" data-nls="${sl}" checked> ${SLOT_NAMES[sl]}</label>`).join("")}
       <label class="chk"><input type="checkbox" id="nlDes" checked> Desery z planu</label></div>
     <div class="small muted">Dla kogo:</div><div class="row tight">${profileList().map(([k, p]) => `<label class="chk"><input type="checkbox" data-nlp="${k}" checked> ${esc(p.name)}</label>`).join("")}</div>
-    <label class="small">Nazwa <input id="nlName" style="width:100%"></label>
+    ${listId ? "" : `<label class="small">Nazwa <input id="nlName" style="width:100%"></label>`}
     <div id="nlInfo" class="small muted"></div>
-    <div class="row"><button class="btn primary" id="nlGo">Utwórz listę</button><button class="btn" id="shClose">Anuluj</button></div>`);
+    ${listId ? `<p class="small muted">Składniki dojdą do tej listy (te same produkty się zsumują); odhaczenia i pozycje dodane ręcznie zostają.</p>` : ""}
+    <div class="row"><button class="btn primary" id="nlGo">${listId ? "Dodaj do listy" : "Utwórz listę"}</button><button class="btn" id="shClose">Anuluj</button></div>`);
   const sync = () => { d.querySelector("#nlFrom").value = st.from; d.querySelector("#nlTo").value = st.to;
-    d.querySelector("#nlName").value = `Zakupy ${dLabel(st.from)}–${dLabel(st.to)}`;
+    if (!listId) d.querySelector("#nlName").value = `Zakupy ${dLabel(st.from)}–${dLabel(st.to)}`;
     d.querySelector("#nlInfo").textContent = `${W.daysBetween(st.from, st.to) + 1} dni. Posiłki ugotowane przed pierwszym dniem („z wczoraj”) są pomijane.`; };
   sync();
   d.querySelectorAll("[data-pr]").forEach(b => b.onclick = () => { [st.from, st.to] = presets[b.dataset.pr]; sync(); });
@@ -698,15 +708,22 @@ function openNewList() {
     if (!st.slots.length && !st.desserts) return toast("Zaznacz co najmniej jeden posiłek", "err");
     if (!st.people.length) return toast("Zaznacz co najmniej jedną osobę", "err");
     if (W.daysBetween(st.from, st.to) > 20) return toast("Zakres najwyżej 3 tygodnie", "err");
+    const allP = st.people.length === profileList().length;
+    const part = { id: "p" + Date.now().toString(36), from: st.from, to: st.to, slots: st.slots, people: allP ? null : st.people, desserts: st.desserts };
+    if (listId) {
+      const ov = SH.partOverlap(parts0, part);
+      if (ov) return toast(`Te dni są już na liście (${partTxt(ov)}) – składniki liczyłyby się dwa razy. Zmień zakres albo usuń tamto dodanie.`, "err");
+      d.querySelector("#nlGo").disabled = true; closeSheet();
+      return applyParts(listId, L0, [...parts0, part], S.shop.items || {}, `Dodano z planu: ${partTxt(part)}`);
+    }
     d.querySelector("#nlGo").disabled = true;
     const weeks = await weeksFor(st.from, st.to);
-    const allP = st.people.length === profileList().length;
     const { need, missing } = SH.computeNeeds(weeks, S.recipes, { ...st, people: allP ? null : st.people, products: S.products });
     const items = SH.buildItems(need, S.products);
     if (!Object.keys(items).length) { d.querySelector("#nlGo").disabled = false; return toast(missing.length ? "Brak planu na wybrane dni – najpierw wygeneruj tydzień" : "Nic do kupienia w tym zakresie", "err"); }
     const id = be.newListId(); const now = new Date().toISOString();
     bg(be.createList(id, { name: d.querySelector("#nlName").value.trim() || "Zakupy", createdAt: now, createdBy: S.user.email, createdByName: S.user.name || S.user.email,
-      range: { from: st.from, to: st.to }, slots: st.slots, people: allP ? null : st.people, desserts: st.desserts, status: "aktywna", recalcAt: now }, items));
+      parts: [part], status: "aktywna", recalcAt: now }, items));
     closeSheet(); location.hash = `#/zakupy/${id}`;
     if (missing.length) toast(`Bez planu: ${missing.map(x => DAY_NAMES[W.dayNum(x)] + " " + dLabel(x)).join(", ")} – te dni pominięto`, "err");
     else toast(`Lista utworzona: ${Object.keys(items).length} pozycji`, "ok");
@@ -741,10 +758,11 @@ function vShopList(m, id) {
   const closed = l.status === "zamknieta";
   m.innerHTML = `<a class="back" href="#/zakupy">← Listy</a>
     <h2>${esc(l.name)}${closed ? ` <span class="badge">zamknięta</span>` : ""}</h2>
-    <div class="muted small">${rangeTxt(l)} · ${slotsTxt(l)}</div>
+    ${SH.partsOf(l).length ? `<div class="parts">${SH.partsOf(l).map(p => `<div class="part small"><span>📅 ${partTxt(p)}</span><button class="ib" data-rmpart="${esc(p.id)}" aria-label="Usuń dodanie">✕</button></div>`).join("")}</div>`
+      : `<div class="muted small">lista ręczna · własne pozycje</div>`}
     <div class="progress"><div style="width:${counted.length ? Math.round(done / counted.length * 100) : 0}%"></div></div>
     <div class="small">${done} / ${counted.length} kupione</div>
-    <div class="row tight shopbar"><button class="btn primary" id="lsCopy">📋 Do Listonic</button>${l.range ? `<button class="btn" id="lsRecalc">🔄 Przelicz</button>` : ""}<button class="btn" id="lsMore">⋯</button></div>
+    <div class="row tight shopbar"><button class="btn primary" id="lsCopy">📋 Do Listonic</button>${SH.partsOf(l).length ? `<button class="btn" id="lsRecalc">🔄 Przelicz</button>` : ""}<button class="btn" id="lsPlan" title="Dodaj z planu">➕ Z planu</button><button class="btn" id="lsMore">⋯</button></div>
     <form class="row tight addrow" id="lsAdd"><input id="lsTxt" placeholder="Dodaj pozycję, np. kawa" autocomplete="off"><input id="lsAmt" placeholder="ilość" style="width:5.5em">
       <select id="lsAisle">${AISLES.map(a => `<option ${a === "Inne" ? "selected" : ""}>${a}</option>`).join("")}</select><button class="btn">Dodaj</button></form>
     <div id="lsSug" class="chips"></div>
@@ -773,6 +791,12 @@ function vShopList(m, id) {
   $("#lsTxt").onfocus = drawSug;
   $("#lsCopy").onclick = () => openListonic(items);
   if ($("#lsRecalc")) $("#lsRecalc").onclick = () => recalcList(id, l, items);
+  $("#lsPlan").onclick = () => openNewList(id);
+  m.querySelectorAll("[data-rmpart]").forEach(b => b.onclick = () => {
+    const ps = SH.partsOf(l); const pt = ps.find(p => p.id === b.dataset.rmpart);
+    if (!confirm(`Usunąć z listy składniki z planu: ${partTxt(pt).replace(/<[^>]+>/g, "")}? Kupione (odhaczone) pozycje zostaną.`)) return;
+    applyParts(id, l, ps.filter(p => p !== pt), items, "Usunięto dodanie z planu");
+  });
   $("#lsMore").onclick = () => {
     const d = sheet(`<h3>${esc(l.name)}</h3><div class="acts">
       <button class="btn" data-a="rename">✏️ Zmień nazwę</button>
@@ -791,14 +815,20 @@ function vShopList(m, id) {
   };
 }
 
-async function recalcList(id, l, items) {
-  const weeks = await weeksFor(l.range.from, l.range.to);
-  const { need, missing } = SH.computeNeeds(weeks, S.recipes, { from: l.range.from, to: l.range.to, slots: l.slots || SLOTS, people: l.people || null, desserts: l.desserts !== false, products: S.products });
+const recalcList = (id, l, items) => applyParts(id, l, SH.partsOf(l), items, null);
+// Przeliczenie listy dla zadanych części planu (dodanie / usunięcie części / „Przelicz”)
+async function applyParts(id, l, parts, items, okMsg) {
+  const sats = [...new Set(parts.flatMap(p => SH.saturdaysIn(p.from, p.to)))];
+  const weeks = {}; for (const sat of sats) Object.assign(weeks, await weeksFor(sat, sat));
+  const { need, missing } = SH.needsForParts(weeks, S.recipes, parts, S.products);
   const { upserts, deletes, stats } = SH.mergeItems(items, SH.buildItems(need, S.products));
-  if (!Object.keys(upserts).length && !deletes.length) return toast("Lista jest aktualna", "ok");
-  for (const dd of deletes) delete items[dd]; Object.assign(items, structuredClone(upserts)); rerenderShop();
-  bg(be.writeItems(id, upserts, deletes, { recalcAt: new Date().toISOString() }));
-  toast(`Przeliczono: +${stats.added} nowych, ${stats.changed} zmienionych, −${stats.removed} usuniętych${missing.length ? ` (bez planu: ${missing.length} dni)` : ""}`, "ok");
+  const partsChanged = JSON.stringify(parts) !== JSON.stringify(SH.partsOf(l)) || !Array.isArray(l.parts);
+  if (!Object.keys(upserts).length && !deletes.length && !partsChanged) return toast("Lista jest aktualna", "ok");
+  for (const dd of deletes) delete items[dd]; Object.assign(items, structuredClone(upserts)); l.parts = parts; rerenderShop();
+  const patch = { recalcAt: new Date().toISOString(), parts }; if (l.range !== undefined) Object.assign(patch, { range: null, slots: null, people: null });
+  bg(be.writeItems(id, upserts, deletes, patch));
+  const miss = missing.length ? ` · bez planu: ${missing.map(x => DAY_NAMES[W.dayNum(x)] + " " + dLabel(x)).join(", ")} – „Przelicz” po wygenerowaniu planu` : "";
+  toast(`${okMsg || "Przeliczono"}: +${stats.added} nowych, ${stats.changed} zmienionych, −${stats.removed} usuniętych${miss}`, missing.length ? "err" : "ok");
 }
 
 function openListonic(items) {

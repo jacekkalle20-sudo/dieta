@@ -1,5 +1,5 @@
-// sw.js – Dieta dla Rodziny – service worker v0.7.0 (pamięć podręczna aplikacji do pracy offline)
-const CACHE = "dieta-v0.7.0";
+// sw.js – Dieta dla Rodziny – service worker v0.7.1 (pamięć podręczna aplikacji do pracy offline)
+const CACHE = "dieta-v0.7.1";
 const SHELL = ["./", "index.html", "styles.css", "manifest.json", "config.js", "icon-192.png", "icon-512.png",
   "app.js", "version.js", "defaults.js", "importer.js", "nutrition.js", "scaling.js", "week.js", "shopping.js", "edytor.js", "uwagi.js", "backend-firebase.js"];
 
