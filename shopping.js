@@ -1,8 +1,8 @@
-// shopping.js – v0.6.0 – lista zakupów: sumowanie składników z planu, opakowania, działy, przeliczanie, tekst do Listonic
+// shopping.js – v0.7.0 – lista zakupów: sumowanie składników z planu, opakowania, działy, przeliczanie, tekst do Listonic
 // Bez zależności od Firebase – testowane w Node.
 import { SLOTS, AISLES } from "./defaults.js";
-import { addDays, saturdayOf, participants, recipeOf } from "./week.js";
-import { yieldOf } from "./nutrition.js";
+import { addDays, saturdayOf, participants, recipeOf, subsFor } from "./week.js";
+import { yieldOf, ingredientAmounts } from "./nutrition.js";
 
 // Soboty tygodni potrzebnych dla zakresu dat
 export function saturdaysIn(from, to) {
@@ -12,7 +12,7 @@ export function saturdaysIn(from, to) {
 // Zapotrzebowanie: { productId: { g, sources: [{date, slot, recipeId}] } } + dni bez planu
 // weeks = { sobota: dokument tygodnia | null }, opts = { from, to, slots, people (null = wszyscy), desserts }
 // Desery z planu dnia (days[d].deser.items: [{rid, mult}]) liczone na całość: g × yield × mult, bez filtra osób.
-export function computeNeeds(weeks, recipes, { from, to, slots = SLOTS, people = null, desserts = true }) {
+export function computeNeeds(weeks, recipes, { from, to, slots = SLOTS, people = null, desserts = true, products = null }) {
   const need = {}; const missing = [];
   for (let d = from; d <= to; d = addDays(d, 1)) {
     const day = weeks[saturdayOf(d)]?.days?.[d];
@@ -27,10 +27,12 @@ export function computeNeeds(weeks, recipes, { from, to, slots = SLOTS, people =
         // „z wczoraj”: składniki kupione razem z dniem gotowania; gdy gotowanie było przed zakresem – pomiń
         const lo = m.mode === "shared" ? (m.cook === false ? m.leftoverFrom : null) : (p.cook === false ? p.leftoverFrom : null);
         if (lo && lo < from) continue;
-        for (const x of r.ingredients) {
+        // z bazą produktów: role składników i zamiany w posiłku; bez niej – proste mnożenie (testy, zgodność)
+        const amounts = products ? ingredientAmounts(r, p.scale, products, subsFor(m, pid)) : r.ingredients.map(x => ({ ...x, g: x.g * p.scale }));
+        for (const x of amounts) {
           if (!x.g) continue;
           const e = need[x.p] ||= { g: 0, sources: [] };
-          e.g += x.g * p.scale;
+          e.g += x.g;
           if (!e.sources.some(s => s.date === d && s.slot === sl && s.recipeId === rid)) e.sources.push({ date: d, slot: sl, recipeId: rid });
         }
       }

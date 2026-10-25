@@ -1,9 +1,9 @@
-// app.js – Dieta dla Rodziny – v0.6.0 (desery w planie i na liście, uwagi, wybór domowników na liście zakupów, powrót do dnia w planie)
+// app.js – Dieta dla Rodziny – v0.7.0 (zamiany i pomijanie składników w posiłku, role składników, sezonowość, tagi „też na kolację/śniadanie”)
 import { APP_VERSION, APP_STAGE } from "./version.js";
 import { OWNER_EMAIL } from "./config.js";
 import { defaultConfig, defaultProfiles, CATEGORY_NAMES, TAG_NAMES, FAMILY_NAMES, SLOT_NAMES, DAY_NAMES, productChunkOf, recipeChunkOf } from "./defaults.js";
 import { validateProducts, validateRecipes, diffItems, mergeIntoChunks } from "./importer.js";
-import { recipeTotals, recipeFamilies, formatAmount, yieldOf } from "./nutrition.js";
+import { recipeTotals, recipeFamilies, formatAmount, yieldOf, ingredientAmounts, sumAmounts, amountsTotals, substitutes } from "./nutrition.js";
 import { slotKcal, portionScale, defaultSlotFor, validateSlots } from "./scaling.js";
 import { SLOTS } from "./defaults.js";
 import * as W from "./week.js";
@@ -106,6 +106,7 @@ async function loadData() {
 function refreshIndexes() {
   S.kcalOf = W.buildKcalIndex(S.recipes, (r) => recipeTotals(r, S.products));
   S.famOf = W.buildFamilyIndex(S.recipes, S.products);
+  S.seasonOf = W.buildSeasonIndex(S.recipes, S.products);
 }
 const notesApi = () => ({ S, be, $, esc, toast, sheet, closeSheet, isAdmin });
 const editorApi = () => ({ S, be, $, esc, fmt, toast, sheet, closeSheet, profileList, W, refreshIndexes });
@@ -175,6 +176,36 @@ function vRecipes(m) {
   if ($("#arch")) $("#arch").onchange = (e) => { f.arch = e.target.checked; draw(); };
   if ($("#rNew")) $("#rNew").onclick = () => { S.edit = null; };
   draw();
+}
+
+// ---------- zamiana / pominięcie składnika w posiłku ----------
+function openSub(date, slot, pid, from, g) {
+  const w = S.week.data; const m = w.days[date][slot]; const rid = W.recipeOf(m, pid);
+  const eaters = m.mode === "shared" ? W.participants(m) : [pid];
+  const exclude = new Set(eaters.flatMap(p => S.profiles[p]?.exclusions?.families || []));
+  const cur = W.subsFor(m, pid)?.[from];
+  const orig = S.recipes[rid].ingredients.find(x => x.p === from);
+  const gBase = g || Math.round(orig?.g || 0);
+  const list = substitutes(from, gBase || 100, S.products, { exclude });
+  const sameWeek = W.weekDates(w.start).flatMap(d => SLOTS.map(sl => [d, sl])).filter(([d, sl]) => { const x = w.days[d]?.[sl];
+    return x && (m.mode === "shared" ? x.mode === "shared" && x.recipeId === rid : x.mode !== "shared" && x.per?.[pid]?.recipeId === rid && !x.per[pid].outside); }).length;
+  const st = { scope: "meal" };
+  const d = sheet(`<h3>⇄ ${esc(S.products[from]?.name || from)}${gBase ? ` <span class="muted small">(${gBase} g)</span>` : ""}</h3>
+    <p class="small muted">${m.mode === "shared" ? "Posiłek wspólny – zmiana dla wszystkich przy stole." : `Dla: ${esc(pName(pid))}.`} Ilość zamiennika liczona na te same kcal.</p>
+    ${sameWeek > 1 ? `<div class="seg"><button class="on" data-sc="meal">Ten posiłek</button><button data-sc="week">Cały tydzień (${sameWeek}×)</button></div>` : ""}
+    <div class="rlist">${cur ? `<button class="ritem" data-to="__restore"><span>↩ Przywróć oryginał</span><span class="muted small">${esc(S.products[from]?.name || from)}</span></button>` : ""}
+      <button class="ritem" data-to="__skip"><span>🚫 Pomiń ten składnik</span><span class="muted small">bez zamiennika</span></button>
+      ${list.map(x => `<button class="ritem" data-to="${x.id}" data-f="${x.f}"><span>${esc(x.name)}${x.related ? ` <span class="muted small">podobny</span>` : ""}</span><span class="muted small">≈ ${x.g} g · ${x.kcal100} kcal/100 g${x.fe100 >= 2 ? ` · Fe ${fmt(x.fe100, 1)}` : ""}</span></button>`).join("")
+        || `<p class="muted small">Brak zamienników w bazie dla tej grupy produktów.</p>`}</div>
+    <div class="row"><button class="btn" id="shClose">Anuluj</button></div>`);
+  d.querySelector("#shClose").onclick = closeSheet;
+  d.querySelectorAll("[data-sc]").forEach(b => b.onclick = () => { st.scope = b.dataset.sc; d.querySelectorAll("[data-sc]").forEach(x => x.classList.toggle("on", x === b)); });
+  d.querySelectorAll("[data-to]").forEach(b => b.onclick = async () => {
+    const to = b.dataset.to; const sub = to === "__restore" ? null : to === "__skip" ? { to: null } : { to, f: +b.dataset.f };
+    const w2 = structuredClone(S.week.data); const slots = W.setSub(w2, date, slot, pid, from, sub, st.scope);
+    closeSheet(); for (const sl of slots) await saveSlot(w2, sl); route();
+    toast(sub === null ? "Przywrócono oryginał" : sub.to ? `Zamieniono na: ${S.products[sub.to].name}` : "Pominięto składnik", "ok");
+  });
 }
 
 // ---------- desery: do listy zakupów i do planu dnia ----------
@@ -289,7 +320,15 @@ function vRecipe(m, id, cx = null) {
       ${dOpts.length > 1 ? `<div class="seg">${dOpts.map(([v, , n]) => `<button class="${P.dm === v ? "on" : ""}" data-dm="${v}">${n}</button>`).join("")}</div>` : ""}
       <div class="row tight"><button class="btn small" id="dShop">🛒 Do listy zakupów</button><button class="btn small" id="dPlan">📅 Zaplanuj na dzień</button></div></div>`;
   }
-  const k = ps.scale; const t = Object.fromEntries(Object.entries(base).map(([a, v]) => [a, v * k]));
+  const k = ps.scale;
+  // ilości: role składników (stałe / w sztukach / skaluj) i zamiany z planu; desery liniowo
+  const mySubs = cookCtx ? W.subsFor(meal, mePid || cx.pid) : null;
+  const amounts = isDes ? ingredientAmounts(r, k, S.products, null, { linear: true })
+    : cook ? sumAmounts(cook.rows.map(row => ingredientAmounts(r, row.scale, S.products, W.subsFor(wk.days[row.date][cx.slot], row.pid))))
+    : ingredientAmounts(r, k, S.products, P.base ? null : mySubs);
+  const skipped = !isDes && !cook && mySubs && !P.base ? Object.entries(mySubs).filter(([, v]) => !v.to).map(([pid]) => pid) : [];
+  const t = amountsTotals(amounts, S.products);
+  const canSub = cookCtx && !isDes;
   const blocked = profileList().filter(([, p]) => (p.exclusions?.families || []).some(x => fam.includes(x)));
   const mine = (prof?.exclusions?.families || []).filter(x => fam.includes(x));
   m.innerHTML = `<a href="${cx ? "javascript:history.back()" : "#/przepisy"}" class="back">← ${cx ? "Wróć do planu" : "Przepisy"}</a>
@@ -313,7 +352,9 @@ function vRecipe(m, id, cx = null) {
       : blocked.length ? `<div class="note">Zawiera: ${fam.map(x => FAMILY_NAMES[x] || x).join(", ")} – nie dla: ${blocked.map(([, p]) => esc(p.name)).join(", ")}</div>` : ""}
     <div class="stats"><div><b>${fmt(t.kcal)}</b>kcal</div><div><b>${fmt(t.p)}</b>białko g</div><div><b>${fmt(t.f)}</b>tłuszcz g</div><div><b>${fmt(t.c)}</b>węgl. g</div><div><b>${fmt(t.fe, 1)}</b>żelazo mg</div></div>
     <div class="card"><h3>Składniki</h3>
-      <ul class="ing">${r.ingredients.map(x => { const p = S.products[x.p]; return `<li><span>${esc(p?.name || x.p)}</span><span>${esc(formatAmount(x, p, k))}</span></li>`; }).join("")}</ul></div>
+      <ul class="ing">${amounts.map(x => { const p = S.products[x.p]; return `<li ${canSub ? `class="subable" data-sub="${esc(x.subFrom || x.p)}" data-g="${Math.round(x.g)}"` : ""}><span>${esc(p?.name || x.p)}${x.subFrom ? ` <span class="muted small">zamiast: ${esc(S.products[x.subFrom]?.name || x.subFrom)}</span>` : ""}${canSub ? ` <span class="subhint">⇄</span>` : ""}</span><span>${esc(formatAmount({ ...x }, p, 1))}</span></li>`; }).join("")}
+      ${skipped.map(pid => `<li class="subable skipped" data-sub="${esc(pid)}" data-g="0"><span>${esc(S.products[pid]?.name || pid)} <span class="muted small">pominięto</span></span><span>—</span></li>`).join("")}</ul>
+      ${canSub ? `<p class="small muted">Dotknij składnika, żeby go zamienić albo pominąć${meal.mode === "shared" ? " (we wspólnym posiłku – dla wszystkich przy stole)" : ""}.</p>` : ""}</div>
     <div class="card"><h3>Przygotowanie</h3><p>${esc(r.steps)}</p></div>
     <p class="muted small">Porcja bazowa ${fmt(base.kcal)} kcal (wyliczone z gramatur; źródło podawało ${r.sourceKcal ?? "–"} kcal). Id: ${id}, wersja ${r.rev}.</p>
     <p><button class="btn small" id="rNote">💬 Uwaga do tego przepisu</button></p>`;
@@ -324,6 +365,7 @@ function vRecipe(m, id, cx = null) {
   if ($("#rEdit")) $("#rEdit").onclick = () => { location.hash = `#/edytuj/${id}`; };
   m.querySelectorAll("[data-dm]").forEach(b => b.onclick = () => { P.dm = b.dataset.dm; again(); });
   if ($("#dShop")) $("#dShop").onclick = () => openDessertShop(id);
+  m.querySelectorAll("[data-sub]").forEach(li => li.onclick = () => openSub(cx.date, cx.slot, meal.mode === "shared" ? null : (mePid || cx.pid), li.dataset.sub, +li.dataset.g));
   if ($("#dPlan")) $("#dPlan").onclick = () => openDessertPlan(id);
   $("#rNote").onclick = () => N.openNoteForm(notesApi(), { label: `przepis: ${r.name}`, ref: `#/przepis/${id}` });
   if ($("#pProf")) {
@@ -341,7 +383,7 @@ const dLabel = (d) => { const x = W.parseYmd(d); return `${x.getDate()}.${String
 const rName = (rid) => rid ? (S.recipes[rid]?.name || "(usunięty przepis)") : "— wybierz ręcznie —";
 const pName = (pid) => S.profiles[pid]?.name || pid;
 function ctxFor(sat, history = []) {
-  return { sat, profiles: S.profiles, config: S.config, recipes: S.recipes, kcalOf: S.kcalOf, famOf: S.famOf, history, rng: Math.random };
+  return { sat, profiles: S.profiles, config: S.config, recipes: S.recipes, kcalOf: S.kcalOf, famOf: S.famOf, seasonOf: S.seasonOf, history, rng: Math.random };
 }
 function ensureWeek(sat, onData) {
   if (S.week.sat === sat) return;
@@ -382,6 +424,8 @@ function mealLine(w, date, slot, pid, { kcal = true } = {}) {
   const guests = m.mode === "individual" ? byOrder(Object.keys(m.per).filter(g => m.per[g].with === pid && !m.per[g].outside)) : [];
   const meta = [kcal && kc ? `${kc} kcal` : "", lo ? `z ${DAY_NAMES[W.dayNum(lo)]}` : "",
     rid && (S.recipes[rid]?.tags || []).includes("zelazo") ? `<span class="fe">Fe</span>` : "",
+    rid && W.inSeason({ seasonOf: S.seasonOf }, rid, date) ? "🌱" : "",
+    (() => { const sb = W.subsFor(m, pid); const n = sb ? Object.keys(sb).length : 0; return n ? `⇄ ${n} ${n === 1 ? "zmiana" : n < 5 ? "zmiany" : "zmian"}` : ""; })(),
     (m.mode === "shared" ? m.locked : p.locked) ? "🔒" : "",
     p.with ? `z: ${esc(pName(p.with))}` : "", guests.length ? `+ ${guests.map(g => esc(pName(g))).join(", ")}` : "", p.extra ? "dodatkowo" : ""].filter(Boolean);
   return `<span class="mn">${rid ? `<a href="#/przepis/${rid}/${date}/${slot}/${pid}">${esc(rName(rid))}</a>` : `<span class="warntext">${rName(null)}</span>`}</span>${meta.length ? `<span class="mm">${meta.join(" · ")}</span>` : ""}`;
@@ -657,7 +701,7 @@ function openNewList() {
     d.querySelector("#nlGo").disabled = true;
     const weeks = await weeksFor(st.from, st.to);
     const allP = st.people.length === profileList().length;
-    const { need, missing } = SH.computeNeeds(weeks, S.recipes, { ...st, people: allP ? null : st.people });
+    const { need, missing } = SH.computeNeeds(weeks, S.recipes, { ...st, people: allP ? null : st.people, products: S.products });
     const items = SH.buildItems(need, S.products);
     if (!Object.keys(items).length) { d.querySelector("#nlGo").disabled = false; return toast(missing.length ? "Brak planu na wybrane dni – najpierw wygeneruj tydzień" : "Nic do kupienia w tym zakresie", "err"); }
     const id = be.newListId(); const now = new Date().toISOString();
@@ -749,7 +793,7 @@ function vShopList(m, id) {
 
 async function recalcList(id, l, items) {
   const weeks = await weeksFor(l.range.from, l.range.to);
-  const { need, missing } = SH.computeNeeds(weeks, S.recipes, { from: l.range.from, to: l.range.to, slots: l.slots || SLOTS, people: l.people || null, desserts: l.desserts !== false });
+  const { need, missing } = SH.computeNeeds(weeks, S.recipes, { from: l.range.from, to: l.range.to, slots: l.slots || SLOTS, people: l.people || null, desserts: l.desserts !== false, products: S.products });
   const { upserts, deletes, stats } = SH.mergeItems(items, SH.buildItems(need, S.products));
   if (!Object.keys(upserts).length && !deletes.length) return toast("Lista jest aktualna", "ok");
   for (const dd of deletes) delete items[dd]; Object.assign(items, structuredClone(upserts)); rerenderShop();

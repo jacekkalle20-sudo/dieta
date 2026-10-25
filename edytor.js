@@ -1,6 +1,6 @@
-// edytor.js – v0.6.0 – dodawanie i edycja przepisów oraz produktów w aplikacji (administratorzy)
+// edytor.js – v0.7.0 – dodawanie i edycja przepisów oraz produktów w aplikacji (administratorzy)
 import { CATEGORY_NAMES, TAG_NAMES, FAMILY_NAMES, AISLES, productChunkOf, recipeChunkOf } from "./defaults.js";
-import { recipeTotals, recipeFamilies, yieldOf } from "./nutrition.js";
+import { recipeTotals, recipeFamilies, yieldOf, roleOf, ROLE_NAMES } from "./nutrition.js";
 
 export const STATUS_NAMES = { aktywny: "aktywny", do_wyprobowania: "do wypróbowania (poza losowaniem)", do_uzupelnienia: "do uzupełnienia (poza losowaniem)", archiwum: "archiwum (ukryty)" };
 export const UNIT_NAMES = { g: "g", ml: "ml", szt: "szt", lyzka: "łyżka", lyzeczka: "łyżeczka", plaster: "plaster", kromka: "kromka", garsc: "garść",
@@ -20,6 +20,11 @@ export function toGrams(p, qty, unit) {
 export function ingredientTxt(qty, unit) { return `${String(Math.round(qty * 100) / 100).replace(".", ",")} ${UNIT_NAMES[unit] || unit}`; }
 // Wiersz edytora z zapisanego składnika: odczyt ilości i jednostki z opisu („2 kromki”, „250 ml”), w razie wątpliwości gramy
 export function rowFromIngredient(x, products) {
+  const row = rowFromIngredient0(x, products);
+  row.r = x.r || ""; row.auto = roleOf({ ...x, r: undefined }, products[x.p]); // rola ręczna lub automatyczna z danych źródłowych
+  return row;
+}
+function rowFromIngredient0(x, products) {
   const p = products[x.p];
   if (!x.g) return { p: x.p, qty: "", unit: "g" }; // „do smaku”
   const m = (x.txt || "").trim().match(/^(\d+(?:[.,]\d+)?)\s*([\p{L}]+)/u);
@@ -45,7 +50,10 @@ export function buildRecipe(draft, products, old = null) {
     if (!products[r.p]) { errors.push(`Składnik ${i + 1}: wybierz produkt z bazy (albo dodaj nowy).`); return; }
     const g = Math.round(toGrams(products[r.p], r.qty, r.unit) * 10) / 10;
     if (!(g > 0)) { if (r.qty === "" || r.qty === 0) ingredients.push({ p: r.p, g: 0, txt: "do smaku" }); else errors.push(`${products[r.p].name}: podaj ilość.`); return; }
-    ingredients.push({ p: r.p, g, txt: ingredientTxt(r.qty, r.unit) });
+    const ing = { p: r.p, g, txt: ingredientTxt(r.qty, r.unit) };
+    // rola: ręczna; automatyczna „w sztukach” z pierwotnego opisu zachowana jawnie, gdy nowy opis jest w gramach
+    if (r.r) ing.r = r.r; else if (r.auto === "n" && roleOf(ing, products[r.p]) !== "n") ing.r = "n";
+    ingredients.push(ing);
   });
   if (!ingredients.length) errors.push("Dodaj co najmniej jeden składnik.");
   const recipe = { name: draft.name.trim(), category: draft.category, tags: [...draft.tags], ingredients, steps: draft.steps.trim(),
@@ -102,7 +110,9 @@ export function vEditRecipe(m, id, A) {
             <input type="number" step="any" min="0" data-q="${i}" value="${esc(r.qty)}" placeholder="do smaku">
             <select data-u="${i}">${unitsFor(p).map(u => `<option value="${u}" ${r.unit === u ? "selected" : ""}>${UNIT_NAMES[u] || u}${u !== "g" && p?.units?.[u] ? ` (${p.units[u]} g)` : ""}</option>`).join("")}</select>
             <button class="ib" data-rm="${i}" aria-label="Usuń">✕</button>
-            <div class="small muted einfo">${p ? `${fmt(g)} g · ${fmt(p.per100.kcal * g / 100)} kcal` : r.name ? `<span class="warntext">brak w bazie</span>` : ""}</div></div>`; }).join("")}
+            <div class="small muted einfo">${p ? `${fmt(g)} g · ${fmt(p.per100.kcal * g / 100)} kcal ·
+              <select data-r="${i}" class="rolesel">${[["", `auto: ${ROLE_NAMES[r.auto || roleOf({ p: r.p, g, txt: ingredientTxt(+r.qty || 0, r.unit) }, p)]}`], ["s", "skaluj"], ["c", "stały"], ["n", "w sztukach"]]
+                .map(([v, n]) => `<option value="${v}" ${(r.r || "") === v ? "selected" : ""}>${n}</option>`).join("")}</select>` : r.name ? `<span class="warntext">brak w bazie</span>` : ""}</div></div>`; }).join("")}
         <div class="row tight"><button class="btn small" id="eAdd">+ Składnik</button><button class="btn small" id="eNewProd">+ Nowy produkt do bazy</button></div>
       </div>
       <div class="stats"><div><b>${fmt(t.kcal)}</b>kcal</div><div><b>${fmt(t.p)}</b>białko g</div><div><b>${fmt(t.f)}</b>tłuszcz g</div><div><b>${fmt(t.c)}</b>węgl. g</div><div><b>${fmt(t.fe, 1)}</b>żelazo mg</div></div>
@@ -128,6 +138,7 @@ export function vEditRecipe(m, id, A) {
       r.p = pid || ""; r.name = inp.value.trim(); if (pid && !unitsFor(P[pid]).includes(r.unit)) r.unit = "g"; keepScroll(draw); });
     m.querySelectorAll("[data-q]").forEach(inp => inp.onchange = () => { D.rows[+inp.dataset.q].qty = inp.value === "" ? "" : +inp.value; keepScroll(draw); });
     m.querySelectorAll("[data-u]").forEach(sel => sel.onchange = () => { D.rows[+sel.dataset.u].unit = sel.value; keepScroll(draw); });
+    m.querySelectorAll("[data-r]").forEach(sel => sel.onchange = () => { D.rows[+sel.dataset.r].r = sel.value; });
     m.querySelectorAll("[data-rm]").forEach(b => b.onclick = () => { D.rows.splice(+b.dataset.rm, 1); if (!D.rows.length) D.rows.push({ p: "", qty: "", unit: "g" }); keepScroll(draw); });
     $("#eAdd").onclick = () => { D.rows.push({ p: "", qty: "", unit: "g" }); keepScroll(draw); setTimeout(() => m.querySelector(`[data-pn="${D.rows.length - 1}"]`)?.focus(), 0); };
     $("#eNewProd").onclick = () => { const miss = D.rows.find(x => x.name && !x.p);

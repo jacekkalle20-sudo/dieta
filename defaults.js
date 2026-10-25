@@ -1,8 +1,8 @@
-// defaults.js – v0.5.0 – wartości startowe (specyfikacja v1.3, model danych v1.5)
+// defaults.js – v0.7.0 – wartości startowe (specyfikacja v1.3, model danych v1.5)
 export const SLOTS = ["sniadanie", "ii_sniadanie", "obiad", "przekaska", "kolacja"];
 export const SLOT_NAMES = { sniadanie: "Śniadanie", ii_sniadanie: "II śniadanie", obiad: "Obiad", przekaska: "Przekąska", kolacja: "Kolacja", deser: "Deser" };
 export const CATEGORY_NAMES = { sniadanie: "Śniadania", ii_sniadanie: "II śniadania", przekaska: "Przekąski", obiad: "Obiady", kolacja: "Kolacje", deser: "Desery" };
-export const TAG_NAMES = { zelazo: "żelazo", express: "express", keto: "keto", "2-dni": "na 2 dni" };
+export const TAG_NAMES = { zelazo: "żelazo", express: "express", keto: "keto", "2-dni": "na 2 dni", "tez-kolacja": "też na kolację", "tez-sniadanie": "też na śniadanie" };
 export const FAMILY_NAMES = {
   "migdaly": "migdały", "orzechy-laskowe": "orzechy laskowe", "rodzynki": "rodzynki",
   "watrobka": "wątróbka", "natka-pietruszki": "natka pietruszki", "suszone-morele": "suszone morele",

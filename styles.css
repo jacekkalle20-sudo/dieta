@@ -1,4 +1,4 @@
-/* styles.css – Dieta dla Rodziny – v0.6.0 */
+/* styles.css – Dieta dla Rodziny – v0.7.0 */
 :root{
   --bg:#F6F3EC; --card:#FFFFFF; --ink:#1F2A26; --muted:#6B756F; --line:#E3DED3;
   --brand:#2F5D50; --brand-ink:#FFFFFF; --accent:#E07A3F; --fe:#8E2C2C; --ok:#2E7D4F; --err:#B3261E;
@@ -166,3 +166,9 @@ h2 .btn.small{vertical-align:middle;margin-left:6px}
 .note-card .ntext{white-space:pre-wrap;margin:.4rem 0}
 .note-card.st-zrobiona,.note-card.st-odrzucona{opacity:.65}
 .note-card.st-nowa{border-left:4px solid var(--accent)}
+/* v0.7.0 – zamiany składników, role */
+.ing li.subable{cursor:pointer}
+.ing li.subable:active{background:var(--line)}
+.subhint{color:var(--muted);font-size:.8rem;margin-left:4px}
+.ing li.skipped span:first-child{text-decoration:line-through;color:var(--muted)}
+.rolesel{min-height:28px;padding:0 6px;font-size:.8rem;border-radius:8px}

@@ -1,4 +1,4 @@
-// week.js – v0.6.0 – tydzień planu (sobota–piątek), generator i operacje na posiłkach (bez zależności od Firebase)
+// week.js – v0.7.0 – tydzień planu (sobota–piątek), generator i operacje na posiłkach (bez zależności od Firebase)
 import { SLOTS } from "./defaults.js";
 import { slotKcal } from "./scaling.js";
 
@@ -13,6 +13,16 @@ export const weekDates = (sat) => [0, 1, 2, 3, 4, 5, 6].map(i => addDays(sat, i)
 export const daysBetween = (a, b) => Math.round((parseYmd(b) - parseYmd(a)) / 86400000);
 const weekOrder = (dn) => (dn + 1) % 7; // sob = 0 … pt = 6
 
+// Tagi krzyżowe: przepis z innej kategorii, który pasuje też do tego posiłku
+export const CROSS_TAGS = { sniadanie: "tez-sniadanie", kolacja: "tez-kolacja" };
+export const fitsSlot = (r, slot) => (SLOT_POOLS[slot] || [slot]).includes(r.category) || (CROSS_TAGS[slot] && (r.tags || []).includes(CROSS_TAGS[slot]));
+// Sezonowość: miesiące, w których przepis ma składnik w sezonie
+export function buildSeasonIndex(recipes, products) {
+  const out = {}; for (const [id, r] of Object.entries(recipes)) { const m = new Set();
+    for (const x of r.ingredients) if (x.g) for (const mo of (products[x.p]?.season || [])) m.add(mo);
+    if (m.size) out[id] = [...m]; } return out;
+}
+export const inSeason = (ctx, rid, date) => !!(ctx.seasonOf?.[rid] || []).includes(+date.slice(5, 7));
 export const SLOT_POOLS = { sniadanie: ["sniadanie"], ii_sniadanie: ["ii_sniadanie", "przekaska"], przekaska: ["przekaska", "ii_sniadanie"], obiad: ["obiad"], kolacja: ["kolacja"] };
 
 // ---------- reguły ----------
@@ -68,14 +78,14 @@ export function candidates(ctx, unit, { noRepeat = true, limits = null, exclude 
   const ironPids = unit.pids.filter(pid => ctx.profiles[pid]?.flags?.ironRich);
   const out = [];
   for (const [rid, r] of Object.entries(ctx.recipes)) {
-    if (!pool.includes(r.category) || (r.status && r.status !== "aktywny") || exclude.includes(rid)) continue;
+    if (!(pool.includes(r.category) || (CROSS_TAGS[unit.slot] && (r.tags || []).includes(CROSS_TAGS[unit.slot]))) || (r.status && r.status !== "aktywny") || exclude.includes(rid)) continue;
     if ([...ctx.famOf[rid]].some(f => banned.has(f))) continue;
     const k = ctx.kcalOf[rid]; if (!k) continue;
     const ok = unit.pids.every(pid => { const t = slotKcal(ctx.profiles[pid], unit.slot); if (!t) return true; const s = t / k; return s >= lim.min && s <= lim.max; });
     if (!ok) continue;
     if (noRepeat && ctx.history.some(h => h.slot === unit.slot && h.recipeId === rid && h.pids.some(p => unit.pids.includes(p))
         && unit.days.some(d => Math.abs(daysBetween(h.date, d)) < (ctx.config.weekRules?.noRepeatDays || 7)))) continue;
-    out.push({ rid, w: ironPids.length && (r.tags || []).includes("zelazo") ? 3 : 1 });
+    out.push({ rid, w: (ironPids.length && (r.tags || []).includes("zelazo") ? 3 : 1) * (unit.days.length && inSeason(ctx, rid, unit.days[0]) ? 2 : 1) });
   }
   return out;
 }
@@ -347,4 +357,30 @@ export function addDessert(week, date, rid, mult, by, at = new Date().toISOStrin
 }
 export function removeDessert(week, date, idx) {
   const de = week.days[date]?.deser; if (!de) return null; de.items.splice(idx, 1); return de;
+}
+
+// ---------- zamiany składników w posiłku ----------
+// Posiłek wspólny: meal.subs; indywidualny: per[pid].subs; postać { rid, items: { productId: { to: productId | null, f } } }
+// Zamiany obowiązują tylko dla przepisu, przy którym je zapisano (zmiana dania = zamiany nieaktywne).
+export function subsFor(meal, pid) {
+  const rid = recipeOf(meal, pid); const s = meal?.mode === "shared" ? meal.subs : meal?.per?.[pid]?.subs;
+  return s && s.rid === rid ? s.items : null;
+}
+// Ustawienie / usunięcie zamiany (sub = {to, f} lub null = przywróć). scope: "meal" | "week".
+// Zwraca listę slotów do zapisania.
+export function setSub(week, date, slot, pid, from, sub, scope = "meal") {
+  const m0 = week.days[date][slot]; const rid = recipeOf(m0, pid); const shared = m0.mode === "shared";
+  const targets = [];
+  if (scope === "meal") targets.push([date, slot]);
+  else for (const d of weekDates(week.start)) for (const sl of SLOTS) { const m = week.days[d]?.[sl]; if (!m) continue;
+    if (shared ? (m.mode === "shared" && m.recipeId === rid) : (m.mode !== "shared" && m.per?.[pid] && !m.per[pid].outside && m.per[pid].recipeId === rid)) targets.push([d, sl]); }
+  const slots = new Set();
+  for (const [d, sl] of targets) {
+    const m = week.days[d][sl]; const holder = shared ? m : m.per[pid];
+    if (!holder.subs || holder.subs.rid !== rid) holder.subs = { rid, items: {} };
+    if (sub) holder.subs.items[from] = sub; else delete holder.subs.items[from];
+    if (!Object.keys(holder.subs.items).length) delete holder.subs;
+    slots.add(sl);
+  }
+  return [...slots];
 }
