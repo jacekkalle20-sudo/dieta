@@ -1,4 +1,4 @@
-// backend-demo.js – v0.8.0 – tryb pokazowy bez Firebase (adres z ?demo=1); dane tylko w pamięci przeglądarki
+// backend-demo.js – v0.10.0 – tryb pokazowy bez Firebase (adres z ?demo=1); dane tylko w pamięci przeglądarki
 // Sprawdza ograniczenia Firestore (brak tablic w tablicach, brak undefined), żeby błędy wychodziły już w demo.
 import { OWNER_EMAIL } from "./config.js";
 
@@ -28,7 +28,9 @@ export function createBackend() {
     async setConfig(d) { store.config = clone(d); },
     async getProfiles() { return clone(store.profiles); },
     async setProfile(id, d) { store.profiles[id] = clone(d); },
-    async updateProfile(id, p) { Object.assign(store.profiles[id], clone(p)); },
+    async updateProfile(id, p) { // jak Firestore: klucze z kropką = ścieżka pola
+      for (const [k, v] of Object.entries(clone(p))) { const path = k.split("."); let o = store.profiles[id];
+        for (const seg of path.slice(0, -1)) o = o[seg] ||= {}; o[path[path.length - 1]] = v; } },
     async getChunks(coll) { return clone(store[coll]); },
     async setChunk(coll, id, d) { store[coll][id] = clone(d); },
     async setChunkItem(coll, chunk, id, d) { (store[coll][chunk] ||= { items: {} }).items[id] = clone(d); },

@@ -1,4 +1,4 @@
-// week.js – v0.8.0 – tydzień planu (sobota–piątek), generator i operacje na posiłkach (bez zależności od Firebase)
+// week.js – v0.10.0 – tydzień planu (sobota–piątek), generator i operacje na posiłkach (bez zależności od Firebase)
 import { SLOTS } from "./defaults.js";
 import { slotKcal } from "./scaling.js";
 
@@ -64,6 +64,24 @@ export function ruleState(ctx, pid, date, slot) {
   if (fx) return { outside: true, fixed: true, kcal: fx.kcal ?? null, note: fx.note || "" };
   return { outside: false, fixed: false, kcal: null, note: "" };
 }
+// ---------- oceny (etap 2) ----------
+// prefs: { fav: [rid], dislike: [rid], never: [rid], substitutions: { productId: {to, f} } }
+// Mnożnik losowania dla grupy osób: „nie proponuj” u kogokolwiek = 0; ulubione ×2, nielubiane ×0,3 (na osobę, w granicach 0,1–4).
+export function prefWeight(ctx, pids, rid) {
+  let w = 1;
+  for (const pid of pids) { const pr = ctx.profiles[pid]?.prefs || {};
+    if ((pr.never || []).includes(rid)) return 0;
+    if ((pr.fav || []).includes(rid)) w *= 2;
+    if ((pr.dislike || []).includes(rid)) w *= 0.3; }
+  return Math.min(4, Math.max(0.1, w));
+}
+export const ratingOf = (profile, rid) => { const pr = profile?.prefs || {}; return (pr.fav || []).includes(rid) ? "fav" : (pr.dislike || []).includes(rid) ? "dislike" : (pr.never || []).includes(rid) ? "never" : null; };
+// Zamiany dla porcji osoby: stałe z profilu („zawsze dla mnie”) + zamiany w tym posiłku (mają pierwszeństwo)
+export function personSubs(meal, pid, profiles) {
+  const always = profiles?.[pid]?.prefs?.substitutions || {}; const here = subsFor(meal, pid);
+  if (!Object.keys(always).length) return here;
+  return { ...always, ...(here || {}) };
+}
 export const participants = (meal) => Object.entries(meal?.per || {}).filter(([, p]) => !p.outside).map(([pid]) => pid);
 // Przepis, który je dana osoba w posiłku
 export const recipeOf = (meal, pid) => meal?.mode === "shared" ? meal.recipeId : meal?.per?.[pid]?.recipeId;
@@ -100,7 +118,8 @@ export function candidates(ctx, unit, { noRepeat = true, limits = null, exclude 
     if (!ok) continue;
     if (noRepeat && ctx.history.some(h => h.slot === unit.slot && h.recipeId === rid && h.pids.some(p => unit.pids.includes(p))
         && unit.days.some(d => Math.abs(daysBetween(h.date, d)) < (ctx.config.weekRules?.noRepeatDays || 7)))) continue;
-    out.push({ rid, w: (ironPids.length && (r.tags || []).includes("zelazo") ? 3 : 1) * (unit.days.length && inSeason(ctx, rid, unit.days[0]) ? 2 : 1) });
+    const pw = prefWeight(ctx, unit.pids, rid); if (!pw) continue;
+    out.push({ rid, w: (ironPids.length && (r.tags || []).includes("zelazo") ? 3 : 1) * (unit.days.length && inSeason(ctx, rid, unit.days[0]) ? 2 : 1) * pw });
   }
   return out;
 }

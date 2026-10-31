@@ -1,7 +1,7 @@
-// shopping.js – v0.7.1 – lista zakupów: sumowanie składników z planu, opakowania, działy, przeliczanie, tekst do Listonic
+// shopping.js – v0.10.0 – lista zakupów: sumowanie składników z planu, opakowania, działy, przeliczanie, tekst do Listonic
 // Bez zależności od Firebase – testowane w Node.
 import { SLOTS, AISLES } from "./defaults.js";
-import { addDays, saturdayOf, participants, recipeOf, subsFor } from "./week.js";
+import { addDays, saturdayOf, participants, recipeOf, personSubs } from "./week.js";
 import { yieldOf, ingredientAmounts } from "./nutrition.js";
 
 // Soboty tygodni potrzebnych dla zakresu dat
@@ -12,7 +12,7 @@ export function saturdaysIn(from, to) {
 // Zapotrzebowanie: { productId: { g, sources: [{date, slot, recipeId}] } } + dni bez planu
 // weeks = { sobota: dokument tygodnia | null }, opts = { from, to, slots, people (null = wszyscy), desserts }
 // Desery z planu dnia (days[d].deser.items: [{rid, mult}]) liczone na całość: g × yield × mult, bez filtra osób.
-export function computeNeeds(weeks, recipes, { from, to, slots = SLOTS, people = null, desserts = true, products = null }) {
+export function computeNeeds(weeks, recipes, { from, to, slots = SLOTS, people = null, desserts = true, products = null, profiles = null }) {
   const need = {}; const missing = [];
   for (let d = from; d <= to; d = addDays(d, 1)) {
     const day = weeks[saturdayOf(d)]?.days?.[d];
@@ -28,7 +28,7 @@ export function computeNeeds(weeks, recipes, { from, to, slots = SLOTS, people =
         const lo = m.mode === "shared" ? (m.cook === false ? m.leftoverFrom : null) : (p.cook === false ? p.leftoverFrom : null);
         if (lo && lo < from) continue;
         // z bazą produktów: role składników i zamiany w posiłku; bez niej – proste mnożenie (testy, zgodność)
-        const amounts = products ? ingredientAmounts(r, p.scale, products, subsFor(m, pid)) : r.ingredients.map(x => ({ ...x, g: x.g * p.scale }));
+        const amounts = products ? ingredientAmounts(r, p.scale, products, personSubs(m, pid, profiles)) : r.ingredients.map(x => ({ ...x, g: x.g * p.scale }));
         for (const x of amounts) {
           if (!x.g) continue;
           const e = need[x.p] ||= { g: 0, sources: [] };
@@ -193,10 +193,10 @@ export function partOverlap(parts, np) {
     && (!p.people || !np.people || p.people.some(x => np.people.includes(x)))) || null;
 }
 // Zapotrzebowanie ze wszystkich części (sumowane), dni bez planu – suma
-export function needsForParts(weeks, recipes, parts, products) {
+export function needsForParts(weeks, recipes, parts, products, profiles = null) {
   const need = {}; const missing = new Set();
   for (const pt of parts) {
-    const r = computeNeeds(weeks, recipes, { from: pt.from, to: pt.to, slots: pt.slots || SLOTS, people: pt.people || null, desserts: pt.desserts !== false, products });
+    const r = computeNeeds(weeks, recipes, { from: pt.from, to: pt.to, slots: pt.slots || SLOTS, people: pt.people || null, desserts: pt.desserts !== false, products, profiles });
     for (const d of r.missing) missing.add(d);
     for (const [pid, e] of Object.entries(r.need)) { const t = need[pid] ||= { g: 0, sources: [] }; t.g += e.g;
       for (const s of e.sources) if (!t.sources.some(x => x.date === s.date && x.slot === s.slot && x.recipeId === s.recipeId)) t.sources.push(s); }
