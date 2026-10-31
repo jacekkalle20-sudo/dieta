@@ -1,4 +1,4 @@
-// app.js – Dieta dla Rodziny – v0.8.0 (M5: nieobecności i wyjazdy; v0.7.x: zamiany składników, role, sezonowość, dodawanie z planu do listy)
+// app.js – Dieta dla Rodziny – v0.9.0 (M5: strzałki dni na ekranie Dziś, komunikat o nowej wersji, praca offline; v0.8.0: nieobecności)
 import { APP_VERSION, APP_STAGE } from "./version.js";
 import { OWNER_EMAIL } from "./config.js";
 import { defaultConfig, defaultProfiles, CATEGORY_NAMES, TAG_NAMES, FAMILY_NAMES, SLOT_NAMES, DAY_NAMES, productChunkOf, recipeChunkOf } from "./defaults.js";
@@ -125,7 +125,7 @@ function route() {
   document.querySelectorAll(".nav a").forEach(a => a.classList.toggle("on", a.dataset.k === ({ przepis: "przepisy", edytuj: "przepisy", profil: "wiecej", uwagi: "wiecej" }[view] || view)));
   const m = $("#main"); if (!m) return;
   closeSheet();
-  ({ dzis: () => vToday(m), tydzien: () => vWeek(m, arg), zakupy: () => arg ? vShopList(m, arg) : vShopping(m),
+  ({ dzis: () => vToday(m, arg), tydzien: () => vWeek(m, arg), zakupy: () => arg ? vShopList(m, arg) : vShopping(m),
      przepisy: () => vRecipes(m), edytuj: () => isAdmin() ? vEditRecipe(m, arg, editorApi()) : vRecipes(m), przepis: () => vRecipe(m, arg, a2 ? { date: a2, slot: a3, pid: a4 || "" } : null), profil: () => vProfile(m, arg), wiecej: () => vMore(m), uwagi: () => N.vNotes(m, notesApi()) }[view] || (() => vRecipes(m)))();
   window.scrollTo(0, S.restoreY || 0); S.restoreY = 0;
 }
@@ -656,32 +656,35 @@ function openReplace(date, slot, pid) {
 }
 
 // ---------- Dziś ----------
-function vToday(m) {
-  const today = todayYmd(); const sat = W.saturdayOf(today); ensureWeek(sat, rerenderPlan);
+function vToday(m, arg) {
+  const real = todayYmd(); const date = arg && /^\d{4}-\d{2}-\d{2}$/.test(arg) ? arg : real; const sat = W.saturdayOf(date); ensureWeek(sat, rerenderPlan);
   const pid = S.todayProfile || S.invite.profileId || profileList()[0][0]; S.todayProfile = pid;
   const p = S.profiles[pid]; const w = S.week.data;
+  const nav = `<div class="weekhead"><a class="btn small" href="#/dzis/${W.addDays(date, -1)}" aria-label="Poprzedni dzień">‹</a>
+      <div class="wl"><b>${date === real ? "Dziś · " : ""}${DAY_FULL[W.dayNum(date)]} ${dLabel(date)}</b>${date !== real ? ` <a class="small" href="#/dzis">wróć do dziś</a>` : ""}</div>
+      <a class="btn small" href="#/dzis/${W.addDays(date, 1)}" aria-label="Następny dzień">›</a></div>`;
   const sel = `<select id="tProf">${profileList().map(([k, x]) => `<option value="${k}" ${k === pid ? "selected" : ""}>${esc(x.name)}</option>`).join("")}</select>`;
-  if (w === undefined) { m.innerHTML = `<h2>Dziś</h2><div class="card muted">Wczytywanie…</div>`; return; }
-  if (!w) { m.innerHTML = `<h2>Dziś · ${DAY_FULL[W.dayNum(today)]} ${dLabel(today)}</h2><div class="row tight">${sel}</div><div class="card">Brak planu na ten tydzień. ${isAdmin() ? `<a href="#/tydzien">Wygeneruj tydzień →</a>` : "Poproś administratora o wygenerowanie."}</div>`;
+  if (w === undefined) { m.innerHTML = `<h2>Dzień</h2>${nav}<div class="card muted">Wczytywanie…</div>`; return; }
+  if (!w) { m.innerHTML = `<h2>Dzień</h2>${nav}<div class="row tight">${sel}</div><div class="card">Brak planu na ten tydzień. ${isAdmin() ? `<a href="#/tydzien/${date}">Wygeneruj tydzień →</a>` : "Poproś administratora o wygenerowanie."}</div>`;
     $("#tProf").onchange = (e) => { S.todayProfile = e.target.value; route(); }; return; }
-  const sum = dayKcal(w, today, pid); const todayAbs = S.absences.filter(a => a.from <= today && today <= a.to && a.profiles.includes(pid));
-  m.innerHTML = `<h2>Dziś · ${DAY_FULL[W.dayNum(today)]} ${dLabel(today)}</h2>
+  const sum = dayKcal(w, date, pid); const todayAbs = S.absences.filter(a => a.from <= date && date <= a.to && a.profiles.includes(pid));
+  m.innerHTML = `<h2>Dzień</h2>${nav}
     <div class="row tight">${sel}<span class="muted">${sum.kcal} / ${sum.target} kcal</span></div>
     ${todayAbs.map(a => `<div class="note">🧳 ${a.type === "dom" ? "W domu (mimo stałego wyjątku)" : "Poza domem"}: ${esc(a.note || "")} · do ${DAY_NAMES[W.dayNum(a.to)]} ${dLabel(a.to)}</div>`).join("")}
-    <div class="todaylist">${SLOTS.filter(sl => w.days[today]?.[sl]?.per?.[pid]).map(sl => { const mm = w.days[today][sl]; const e = mm.per[pid];
+    <div class="todaylist">${SLOTS.filter(sl => w.days[date]?.[sl]?.per?.[pid]).map(sl => { const mm = w.days[date][sl]; const e = mm.per[pid];
       return `<div class="card tslot"><div class="sh">${SLOT_NAMES[sl]}${mm.mode === "shared" ? ` <span class="badge sh2">wspólny</span>` : ""}</div>
-        <div class="sl"><div class="ml">${mealLine(w, today, sl, pid)}</div></div>
+        <div class="sl"><div class="ml">${mealLine(w, date, sl, pid)}</div></div>
         <div class="row tight">${e.extra ? "" : `<button class="btn small" data-out="${sl}">${e.outside ? "Jednak w domu" : "Jem poza domem"}</button>`}
-        <button class="btn small" data-act="${today}|${sl}|${mm.mode === "shared" ? "" : pid}">⋯ więcej</button></div></div>`; }).join("")}</div>
-    ${dessertHtml(w, today) ? `<div class="card tslot">${dessertHtml(w, today)}</div>` : ""}
-    <p><a href="#/tydzien">Cały tydzień →</a></p>`;
+        <button class="btn small" data-act="${date}|${sl}|${mm.mode === "shared" ? "" : pid}">⋯ więcej</button></div></div>`; }).join("")}</div>
+    ${dessertHtml(w, date) ? `<div class="card tslot">${dessertHtml(w, date)}</div>` : ""}
+    <p><a href="#/tydzien/${date}">Cały tydzień →</a></p>`;
   bindDessertRemove(m, w);
   $("#tProf").onchange = (e) => { S.todayProfile = e.target.value; route(); };
   m.querySelectorAll("[data-act]").forEach(b => b.onclick = () => { const [d, sl, p2] = b.dataset.act.split("|"); openActions(d, sl, p2); });
   m.querySelectorAll("[data-out]").forEach(b => b.onclick = async () => {
-    const sl = b.dataset.out; const goingOut = !w.days[today][sl].per[pid].outside; let kc = null;
+    const sl = b.dataset.out; const goingOut = !w.days[date][sl].per[pid].outside; let kc = null;
     if (goingOut) { const v = prompt("Orientacyjne kcal posiłku poza domem (opcjonalnie):", ""); if (v === null) return; kc = Math.round(+v) || null; }
-    const w2 = structuredClone(S.week.data); const r = W.setOutside(w2, ctxFor(sat), today, sl, pid, goingOut, kc);
+    const w2 = structuredClone(S.week.data); const r = W.setOutside(w2, ctxFor(sat), date, sl, pid, goingOut, kc);
     await saveSlot(w2, sl); route(); if (r.warning) toast(r.warning, "err");
   });
 }
@@ -1209,3 +1212,22 @@ be.onAuth(async (u) => {
 });
 
 if ("serviceWorker" in navigator && !demo) navigator.serviceWorker.register("./sw.js").catch(() => {});
+
+// ---------- „jest nowa wersja – odśwież” ----------
+// Porównanie wersji uruchomionej z wersją na serwerze (version.js bez pamięci podręcznej): przy starcie,
+// po powrocie do aplikacji i co 30 minut. Odświeżenie wczytuje nowe pliki (service worker pobiera je z sieci).
+async function checkUpdate() {
+  if (!navigator.onLine || $("#upd")) return;
+  try {
+    const txt = await (await fetch(`./version.js?t=${Date.now()}`, { cache: "no-store" })).text();
+    const v = (txt.match(/APP_VERSION\s*=\s*"([^"]+)"/) || [])[1];
+    if (!v || v === APP_VERSION) return;
+    const bar = document.createElement("div"); bar.id = "upd";
+    bar.innerHTML = `<span>Jest nowa wersja aplikacji (${esc(v)}).</span><button class="btn small primary" id="updGo">Odśwież</button><button class="ib" id="updNo" aria-label="Później">✕</button>`;
+    document.body.appendChild(bar);
+    $("#updGo").onclick = async () => { try { const r = await navigator.serviceWorker?.getRegistration(); await r?.update(); } catch {} location.reload(); };
+    $("#updNo").onclick = () => bar.remove();
+  } catch { /* offline albo brak pliku – sprawdzimy później */ }
+}
+setTimeout(checkUpdate, 5000); setInterval(checkUpdate, 30 * 60 * 1000);
+document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") checkUpdate(); });

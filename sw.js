@@ -1,5 +1,5 @@
-// sw.js – Dieta dla Rodziny – service worker v0.8.0 (pamięć podręczna aplikacji do pracy offline)
-const CACHE = "dieta-v0.8.0";
+// sw.js – Dieta dla Rodziny – service worker v0.9.0 (pamięć podręczna aplikacji do pracy offline)
+const CACHE = "dieta-v0.9.0";
 const SHELL = ["./", "index.html", "styles.css", "manifest.json", "config.js", "icon-192.png", "icon-512.png",
   "app.js", "version.js", "defaults.js", "importer.js", "nutrition.js", "scaling.js", "week.js", "shopping.js", "edytor.js", "uwagi.js", "backend-firebase.js"];
 
@@ -15,7 +15,8 @@ self.addEventListener("fetch", (e) => {
   const sdk = url.hostname === "www.gstatic.com" && url.pathname.startsWith("/firebasejs/");
   if (!own && !sdk) return; // Firestore i logowanie zawsze przez sieć (obsługuje je SDK)
   // sieć najpierw (świeża wersja), pamięć podręczna gdy offline
-  e.respondWith(fetch(e.request).then(r => {
+  // własne pliki: zawsze sprawdzenie u serwera (no-cache = rewalidacja), żeby nowa wersja wczytała się od razu
+  e.respondWith(fetch(e.request, own ? { cache: "no-cache" } : undefined).then(r => {
     if (r.ok) { const copy = r.clone(); caches.open(CACHE).then(c => c.put(e.request, copy)); }
     return r;
   }).catch(() => caches.match(e.request)));

@@ -1,4 +1,4 @@
-/* styles.css – Dieta dla Rodziny – v0.8.0 */
+/* styles.css – Dieta dla Rodziny – v0.9.0 */
 :root{
   --bg:#F6F3EC; --card:#FFFFFF; --ink:#1F2A26; --muted:#6B756F; --line:#E3DED3;
   --brand:#2F5D50; --brand-ink:#FFFFFF; --accent:#E07A3F; --fe:#8E2C2C; --ok:#2E7D4F; --err:#B3261E;
@@ -187,3 +187,7 @@ h2 .btn.small{vertical-align:middle;margin-left:6px}
 .abschip.dom{background:#e8f5ee;color:#1f5e3a;border-color:#bfe0cc}
 @media (prefers-color-scheme:dark){ .abschip{background:#3a2d17;color:#f3d9a8;border-color:#5a4521} .abschip.dom{background:#173226;color:#bfe8cf;border-color:#24503a} }
 .absrow{display:flex;align-items:flex-start;justify-content:space-between;gap:8px;padding:8px 0;border-top:1px solid var(--line)}
+/* v0.9.0 – komunikat o nowej wersji */
+#upd{position:fixed;left:12px;right:12px;top:calc(8px + env(safe-area-inset-top));z-index:50;display:flex;align-items:center;gap:8px;
+  background:var(--card);border:1px solid var(--brand);border-radius:12px;padding:8px 10px;box-shadow:0 4px 16px rgba(0,0,0,.18);max-width:560px;margin:0 auto}
+#upd span{flex:1;font-size:.9rem}
