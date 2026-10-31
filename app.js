@@ -1,4 +1,4 @@
-// app.js – Dieta dla Rodziny – v0.7.1 (dodawanie z planu do istniejącej listy zakupów; v0.7.0: zamiany składników, role, sezonowość)
+// app.js – Dieta dla Rodziny – v0.8.0 (M5: nieobecności i wyjazdy; v0.7.x: zamiany składników, role, sezonowość, dodawanie z planu do listy)
 import { APP_VERSION, APP_STAGE } from "./version.js";
 import { OWNER_EMAIL } from "./config.js";
 import { defaultConfig, defaultProfiles, CATEGORY_NAMES, TAG_NAMES, FAMILY_NAMES, SLOT_NAMES, DAY_NAMES, productChunkOf, recipeChunkOf } from "./defaults.js";
@@ -17,7 +17,7 @@ const { createBackend } = await import(demo ? "./backend-demo.js" : "./backend-f
 const be = createBackend();
 
 const S = { user: null, config: null, profiles: {}, products: {}, recipes: {}, invite: null, filters: { q: "", cat: "", tag: "", profile: "" }, portion: { profile: "", slot: "", base: false, recipe: "", who: "me", days: "day" }, edit: null,
-  week: { sat: null, data: undefined, unsub: null }, weekSel: null, weekProfile: "", todayProfile: "", weekUi: {}, restoreY: 0,
+  week: { sat: null, data: undefined, unsub: null }, weekSel: null, weekProfile: "", todayProfile: "", weekUi: {}, restoreY: 0, absences: [],
   shop: { lists: undefined, memory: {}, unsubL: null, listId: null, items: undefined, unsubI: null, showDone: true, showStaples: false, open: {} } };
 const $ = (sel) => document.querySelector(sel);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -86,6 +86,8 @@ async function boot() {
       await be.updateProfile(pid, { uid: S.user.uid }); S.profiles[pid].uid = S.user.uid;
     }
     await loadData();
+    if (!S.absUnsub) S.absUnsub = be.watchAbsences((a) => { S.absences = a; const v = (location.hash || "#/dzis").split("/")[1];
+      if (["tydzien", "dzis", "wiecej", undefined, ""].includes(v) && !$("#sheet")) route(); }, (e) => toast("Błąd synchronizacji nieobecności: " + (e.code || e.message), "err"));
     S.filters.profile ||= pid || "";
     renderShell(); route();
   } catch (e) {
@@ -176,6 +178,83 @@ function vRecipes(m) {
   if ($("#arch")) $("#arch").onchange = (e) => { f.arch = e.target.checked; draw(); };
   if ($("#rNew")) $("#rNew").onclick = () => { S.edit = null; };
   draw();
+}
+
+// ---------- nieobecności i wyjazdy (M5) ----------
+const absWho = (a) => a.profiles.length === profileList().length ? "Cała rodzina" : a.profiles.map(p => esc(pName(p))).join(", ");
+const absWhen = (a) => a.from === a.to ? `${DAY_NAMES[W.dayNum(a.from)]} ${dLabel(a.from)}` : `${DAY_NAMES[W.dayNum(a.from)]} ${dLabel(a.from)} – ${DAY_NAMES[W.dayNum(a.to)]} ${dLabel(a.to)}`;
+const absSlots = (a) => !a.slots ? "wszystkie posiłki" : a.slots.map(x => SLOT_NAMES[x]).join(", ");
+function absBanner(from, to) {
+  const list = S.absences.filter(a => a.from <= to && from <= a.to).sort((a, b) => a.from.localeCompare(b.from));
+  return list.length ? `<div class="absbar">${list.map(a => `<span class="abschip ${a.type}">🧳 ${absWho(a)}: ${esc(a.note || (a.type === "dom" ? "w domu" : "poza domem"))} · ${absWhen(a)}</span>`).join("")}</div>` : "";
+}
+function absencesCard() {
+  const today = todayYmd();
+  const cur = S.absences.filter(a => a.to >= today).sort((a, b) => a.from.localeCompare(b.from)); const past = S.absences.length - cur.length;
+  return `<div class="card"><h3>🧳 Nieobecności i wyjazdy</h3>
+    <p class="small muted">Urlop, delegacja, wyjazd, ferie… Plan tygodnia i lista zakupów same to uwzględnią.</p>
+    ${cur.map(a => `<div class="absrow"><div><b>${absWho(a)}</b> – ${a.type === "dom" ? "w domu mimo stałego wyjątku" : "poza domem"}${a.note ? ` (${esc(a.note)})` : ""}
+      <div class="small muted">${absWhen(a)} · ${absSlots(a)}</div></div><button class="ib" data-absdel="${esc(a.id)}" aria-label="Usuń">✕</button></div>`).join("") || `<p class="muted small">Brak zaplanowanych nieobecności.</p>`}
+    ${past ? `<p class="small muted">Minione: ${past}</p>` : ""}
+    <div class="row tight"><button class="btn primary" id="absAdd">+ Dodaj nieobecność</button></div></div>`;
+}
+function bindAbsences(m) {
+  $("#absAdd").onclick = openAbsence;
+  m.querySelectorAll("[data-absdel]").forEach(b => b.onclick = async () => {
+    const a = S.absences.find(x => x.id === b.dataset.absdel); if (!a || !confirm(`Usunąć: ${absWho(a).replace(/<[^>]+>/g, "")} – ${absWhen(a)}? Plan wróci do zwykłych ustawień.`)) return;
+    S.absences = S.absences.filter(x => x !== a); bg(be.deleteAbsence(a.id)); await applyAbsenceToPlan(a); route();
+  });
+}
+// Uaktualnienie zaplanowanych tygodni w zakresie nieobecności (po dodaniu lub usunięciu)
+async function applyAbsenceToPlan(a) {
+  let n = 0;
+  for (const sat of SH.saturdaysIn(a.from, a.to)) {
+    const w = S.week.sat === sat && S.week.data ? structuredClone(S.week.data) : await be.getWeek(sat).catch(() => null);
+    if (!w) continue;
+    const ctx = ctxFor(sat, W.historyFromWeek(await be.getWeek(W.addDays(sat, -7)).catch(() => null)));
+    const slots = W.refreshPresence(w, ctx, W.absenceDates(w, a)); if (!slots.length) continue;
+    const items = []; for (const sl of slots) for (const d of W.weekDates(sat)) if (w.days[d]?.[sl]) items.push({ date: d, slot: sl, meal: w.days[d][sl] });
+    if (S.week.sat === sat) S.week.data = w;
+    bg(be.updateMeals(sat, items, { updatedAt: new Date().toISOString(), updatedBy: S.user.email })); n++;
+  }
+  if (n) toast(`Zaktualizowano plan (${n} ${n === 1 ? "tydzień" : "tygodnie"}) – sprawdź listę zakupów („Przelicz”)`, "ok");
+}
+function openAbsence() {
+  const today = todayYmd(); const me = S.invite.profileId;
+  const st = { type: "poza", profiles: me ? [me] : [], from: today, to: today, slots: null, note: "" };
+  const d = sheet(`<h3>🧳 Nowa nieobecność</h3>
+    <div class="seg"><button class="on" data-at="poza">Poza domem</button><button data-at="dom">W domu mimo stałego wyjątku</button></div>
+    <p class="small muted" id="abHint"></p>
+    <div class="small muted">Kto:</div>
+    <div class="row tight">${profileList().map(([k, p]) => `<label class="chk"><input type="checkbox" data-ap="${k}" ${st.profiles.includes(k) ? "checked" : ""}> ${esc(p.name)}</label>`).join("")}
+      <button class="btn small" id="abAll">Cała rodzina</button></div>
+    <div class="row tight"><label>Od <input type="date" id="abFrom" value="${today}"></label><label>Do <input type="date" id="abTo" value="${today}"></label></div>
+    <div class="small muted">Posiłki:</div>
+    <div class="row tight"><label class="chk"><input type="checkbox" id="abAllSl" checked> wszystkie</label>${SLOTS.map(sl => `<label class="chk"><input type="checkbox" data-as="${sl}" disabled> ${SLOT_NAMES[sl]}</label>`).join("")}</div>
+    <label class="small">Opis <input id="abNote" placeholder="np. delegacja, ferie, wyjazd na weekend" style="width:100%"></label>
+    <div class="row"><button class="btn primary" id="abGo">Zapisz</button><button class="btn" id="shClose">Anuluj</button></div>`);
+  const hint = () => { d.querySelector("#abHint").textContent = st.type === "dom"
+    ? "Np. ferie: Lena je obiady w domu, choć zwykle je w szkole. Działa tylko tam, gdzie jest stały wyjątek."
+    : "Wybrane osoby nie jedzą w domu – generator ich pomija, wspólne posiłki liczą się na mniej osób, lista zakupów maleje."; };
+  hint();
+  d.querySelectorAll("[data-at]").forEach(b => b.onclick = () => { st.type = b.dataset.at; d.querySelectorAll("[data-at]").forEach(x => x.classList.toggle("on", x === b)); hint(); });
+  d.querySelector("#abAll").onclick = () => d.querySelectorAll("[data-ap]").forEach(c => c.checked = true);
+  d.querySelector("#abAllSl").onchange = (e) => d.querySelectorAll("[data-as]").forEach(c => { c.disabled = e.target.checked; if (e.target.checked) c.checked = false; });
+  d.querySelector("#abFrom").onchange = (e) => { if (d.querySelector("#abTo").value < e.target.value) d.querySelector("#abTo").value = e.target.value; };
+  d.querySelector("#shClose").onclick = closeSheet;
+  d.querySelector("#abGo").onclick = async () => {
+    const a = { type: st.type, profiles: [...d.querySelectorAll("[data-ap]:checked")].map(c => c.dataset.ap),
+      from: d.querySelector("#abFrom").value, to: d.querySelector("#abTo").value,
+      slots: d.querySelector("#abAllSl").checked ? null : [...d.querySelectorAll("[data-as]:checked")].map(c => c.dataset.as),
+      note: d.querySelector("#abNote").value.trim(), kcal: null, createdBy: S.user.email, createdAt: new Date().toISOString() };
+    if (!a.profiles.length) return toast("Zaznacz, kogo dotyczy", "err");
+    if (!a.from || !a.to || a.to < a.from) return toast("Sprawdź daty", "err");
+    if (a.slots && !a.slots.length) return toast("Zaznacz posiłki albo „wszystkie”", "err");
+    if (W.daysBetween(a.from, a.to) > 62) return toast("Najwyżej 2 miesiące naraz", "err");
+    const id = be.newAbsenceId(); a.id = id; S.absences = [...S.absences, a];
+    closeSheet(); const { id: _, ...data } = a; bg(be.setAbsence(id, data));
+    toast("Zapisano nieobecność", "ok"); await applyAbsenceToPlan(a); route();
+  };
 }
 
 // ---------- zamiana / pominięcie składnika w posiłku ----------
@@ -383,7 +462,7 @@ const dLabel = (d) => { const x = W.parseYmd(d); return `${x.getDate()}.${String
 const rName = (rid) => rid ? (S.recipes[rid]?.name || "(usunięty przepis)") : "— wybierz ręcznie —";
 const pName = (pid) => S.profiles[pid]?.name || pid;
 function ctxFor(sat, history = []) {
-  return { sat, profiles: S.profiles, config: S.config, recipes: S.recipes, kcalOf: S.kcalOf, famOf: S.famOf, seasonOf: S.seasonOf, history, rng: Math.random };
+  return { sat, profiles: S.profiles, config: S.config, recipes: S.recipes, kcalOf: S.kcalOf, famOf: S.famOf, seasonOf: S.seasonOf, absences: S.absences, history, rng: Math.random };
 }
 function ensureWeek(sat, onData) {
   if (S.week.sat === sat) return;
@@ -435,6 +514,10 @@ function slotHtml(w, date, slot, only) {
   const m = w.days[date][slot]; const parts = byOrder(W.participants(m));
   const outs = byOrder(Object.keys(m.per)).filter(pid => m.per[pid].outside).map(pid => [pid, m.per[pid]]);
   const extras = parts.filter(pid => m.per[pid].extra);
+  if (!parts.length && !only) { // nikt nie je w domu (wyjazd, nieobecności)
+    const notes = [...new Set(Object.values(m.per).map(p => p.note).filter(Boolean))];
+    return `<div class="slot empty"><div class="sh">${SLOT_NAMES[slot]} <span class="muted small">nikt w domu${notes.length ? ` · ${esc(notes.join(", "))}` : ""}</span> ${act(m.mode === "shared" ? "" : Object.keys(m.per)[0])}</div></div>`;
+  }
   const act = (pid = "") => `<button class="btn small dots" data-act="${date}|${slot}|${pid}" aria-label="Akcje">⋯</button>`;
   if (only) {
     if (!m.per[only]) return "";
@@ -463,18 +546,21 @@ function vWeek(m, arg) {
       <a class="btn small" href="#/tydzien/${W.addDays(sat, 7)}">›</a></div>
     <div class="row tight"><select id="wProf"><option value="">Cała rodzina</option>${profileList().map(([pid, p]) => `<option value="${pid}" ${only === pid ? "selected" : ""}>${esc(p.name)}</option>`).join("")}</select>
       ${isAdmin() ? `<button class="btn ${w ? "" : "primary"}" id="gen">${w ? "Generuj od nowa" : "Generuj tydzień"}</button>` : ""}</div>`;
+  const absB = absBanner(sat, W.addDays(sat, 6));
   if (w === undefined) { m.innerHTML = `<h2>Plan tygodnia</h2>${head}<div class="card muted">Wczytywanie…</div>`; }
   else if (!w) { m.innerHTML = `<h2>Plan tygodnia</h2>${head}<div class="card">Plan na ten tydzień jeszcze nie istnieje. ${isAdmin() ? "Kliknij „Generuj tydzień”." : "Poproś Jacka lub Agatę o wygenerowanie."}</div>`; }
   else {
     const today = todayYmd();
-    m.innerHTML = `<h2>Plan tygodnia</h2>${head}<div class="days">${W.weekDates(sat).map(d => {
+    m.innerHTML = `<h2>Plan tygodnia</h2>${head}${absB}<div class="days">${W.weekDates(sat).map(d => {
       const slots = SLOTS.filter(sl => w.days[d]?.[sl] && (!only || w.days[d][sl].per[only]));
+      const nobody = !only && slots.length && slots.every(sl => !W.participants(w.days[d][sl]).length);
       const sum = only ? dayKcal(w, d, only) : null;
       const ui = S.weekUi[sat]?.open?.[d];
       const isOpen = ui !== undefined ? ui : d === today || (!W.weekDates(sat).includes(today) && d === sat) || matchMedia("(min-width:900px)").matches;
       return `<details class="day card" data-d="${d}" ${isOpen ? "open" : ""}>
         <summary><b>${DAY_FULL[W.dayNum(d)]}</b> ${dLabel(d)}${d === today ? ` <span class="badge sh2">dziś</span>` : ""}${sum ? ` <span class="muted small">· ${sum.kcal} / ${sum.target} kcal</span>` : ""}</summary>
-        ${slots.map(sl => slotHtml(w, d, sl, only)).join("") || `<p class="muted small">Brak posiłków.</p>`}${dessertHtml(w, d)}</details>`; }).join("")}</div>
+        ${nobody ? `<p class="muted small">🧳 Nikt nie je w domu${(() => { const n = [...new Set(slots.flatMap(sl => Object.values(w.days[d][sl].per).map(p => p.note)).filter(Boolean))]; return n.length ? ` (${esc(n.join(", "))})` : ""; })()} – brak posiłków do przygotowania.</p>`
+          : slots.map(sl => slotHtml(w, d, sl, only)).join("") || `<p class="muted small">Brak posiłków.</p>`}${dessertHtml(w, d)}</details>`; }).join("")}</div>
       <p class="muted small">Wygenerowano: ${w.generatedAt ? new Date(w.generatedAt).toLocaleString("pl-PL") : "—"}${w.updatedBy ? ` · ostatnia zmiana: ${esc(w.updatedBy)}` : ""}</p>`;
   }
   $("#wProf").onchange = (e) => { S.weekProfile = e.target.value; route(); };
@@ -578,9 +664,10 @@ function vToday(m) {
   if (w === undefined) { m.innerHTML = `<h2>Dziś</h2><div class="card muted">Wczytywanie…</div>`; return; }
   if (!w) { m.innerHTML = `<h2>Dziś · ${DAY_FULL[W.dayNum(today)]} ${dLabel(today)}</h2><div class="row tight">${sel}</div><div class="card">Brak planu na ten tydzień. ${isAdmin() ? `<a href="#/tydzien">Wygeneruj tydzień →</a>` : "Poproś administratora o wygenerowanie."}</div>`;
     $("#tProf").onchange = (e) => { S.todayProfile = e.target.value; route(); }; return; }
-  const sum = dayKcal(w, today, pid);
+  const sum = dayKcal(w, today, pid); const todayAbs = S.absences.filter(a => a.from <= today && today <= a.to && a.profiles.includes(pid));
   m.innerHTML = `<h2>Dziś · ${DAY_FULL[W.dayNum(today)]} ${dLabel(today)}</h2>
     <div class="row tight">${sel}<span class="muted">${sum.kcal} / ${sum.target} kcal</span></div>
+    ${todayAbs.map(a => `<div class="note">🧳 ${a.type === "dom" ? "W domu (mimo stałego wyjątku)" : "Poza domem"}: ${esc(a.note || "")} · do ${DAY_NAMES[W.dayNum(a.to)]} ${dLabel(a.to)}</div>`).join("")}
     <div class="todaylist">${SLOTS.filter(sl => w.days[today]?.[sl]?.per?.[pid]).map(sl => { const mm = w.days[today][sl]; const e = mm.per[pid];
       return `<div class="card tslot"><div class="sh">${SLOT_NAMES[sl]}${mm.mode === "shared" ? ` <span class="badge sh2">wspólny</span>` : ""}</div>
         <div class="sl"><div class="ml">${mealLine(w, today, sl, pid)}</div></div>
@@ -898,6 +985,7 @@ function vMore(m) {
       <button class="btn" id="logout">Wyloguj</button></div>
     <div class="card"><h3>Uwagi i pomysły</h3><p class="small muted">Coś nie działa albo masz pomysł? Zapisz – trafi do wspólnej listy w aplikacji.</p>
       <div class="row tight"><button class="btn primary" id="noteAdd">💬 Zgłoś uwagę</button><a class="btn" href="#/uwagi" id="noteList">Lista uwag${S.notes ? ` (${Object.values(S.notes).filter(n => n.status === "nowa").length} nowe)` : ""}</a></div></div>
+    ${absencesCard()}
     <div class="card"><h3>Profile rodziny</h3>
       <div class="profiles">${profileList().map(([id, p]) => `<div class="prof">${canEdit(id) ? `<a class="btn small edit" href="#/profil/${id}">Edytuj</a>` : ""}<div><b>${esc(p.name)}</b>${p.flags?.ironRich ? ` <span class="tag zelazo">Fe+</span>` : ""}${p.uid ? "" : ` <span class="muted small">(bez konta)</span>`} · ${p.kcalTarget} kcal</div>
         <div class="small">${slotsOf(p).map(s => `${SLOT_NAMES[s]} ${p.slots[s]}%`).join(" · ")}</div>
@@ -907,6 +995,7 @@ function vMore(m) {
     <div class="card muted small">Wersja aplikacji ${APP_VERSION} (${APP_STAGE}) · produkty ${S.config.versions?.products || "—"} · przepisy ${S.config.versions?.recipes || "—"}</div>`;
   $("#logout").onclick = () => be.signOut();
   $("#noteAdd").onclick = () => N.openNoteForm(notesApi(), null);
+  bindAbsences(m);
   N.ensureNotes(notesApi(), () => { const a = $("#noteList"); if (a && S.notes) a.textContent = `Lista uwag (${Object.values(S.notes).filter(n => n.status === "nowa").length} nowe)`; });
   if (isAdmin()) { bindAdmin(); bindRules(); }
 }
@@ -987,7 +1076,7 @@ function adminHtml() {
         <label class="btn">Wybierz plik przepisów…<input type="file" accept=".json" id="fRec" hidden></label></div>
       <div id="impOut"></div></details>
     <details class="card"><summary>Kopia zapasowa</summary><p class="muted small">Stan bazy: ${Object.keys(S.products).length} produktów, ${Object.keys(S.recipes).length} przepisów.
-      Kopia zawiera ustawienia, profile (z wykluczeniami i preferencjami), produkty, przepisy, plany tygodni, listy zakupów, podpowiedzi i uwagi.</p>
+      Kopia zawiera ustawienia, profile (z wykluczeniami i preferencjami), produkty, przepisy, plany tygodni, listy zakupów, podpowiedzi, uwagi i nieobecności.</p>
       <div class="row"><button class="btn" id="export">Pobierz kopię (JSON)</button>
         <label class="btn">Przywróć z kopii…<input type="file" accept=".json" id="fRestore" hidden></label></div></details>`;
 }
@@ -1059,11 +1148,11 @@ function importRecipes(json) {
 }
 
 async function exportBackup() {
-  let weeks = {}, shopping = {}, notes = {};
+  let weeks = {}, shopping = {}, notes = {}; const absences = Object.fromEntries(S.absences.map(({ id, ...a }) => [id, a]));
   try { weeks = await be.listWeeks(); shopping = await be.dumpShopping(); notes = await be.listNotes(); }
   catch (e) { toast("Nie udało się pobrać planów/list: " + (e.code || e.message) + " – kopia bez nich", "err"); }
   const data = { kind: "kopia", schema: 2, appVersion: APP_VERSION, exportedAt: new Date().toISOString(),
-    config: S.config, profiles: S.profiles, products: S.products, recipes: S.recipes, weeks, shopping, notes };
+    config: S.config, profiles: S.profiles, products: S.products, recipes: S.recipes, weeks, shopping, notes, absences };
   const a = document.createElement("a");
   a.href = URL.createObjectURL(new Blob([JSON.stringify(data, null, 1)], { type: "application/json" }));
   a.download = `kopia-dieta-${new Date().toISOString().slice(0, 10)}.json`; a.click();
@@ -1080,6 +1169,7 @@ function openRestore(json) {
     ["cfg", "Ustawienia i profile", `zaproszenia, reguły tygodnia, ${Object.keys(json.profiles).length} profili${meAdmin ? "" : " – <b class='warntext'>niedostępne: w kopii nie jesteś administratorem</b>"}`, meAdmin],
     ["db", "Produkty i przepisy", `produkty: ${Object.keys(json.products || {}).length}, przepisy: ${Object.keys(json.recipes || {}).length} – zastąpią obecne (${Object.keys(S.products).length} / ${Object.keys(S.recipes).length})`, !!json.products],
     ["weeks", "Plany tygodni", `tygodnie: ${Object.keys(json.weeks || {}).length} – nadpiszą tygodnie o tych samych datach`, !!Object.keys(json.weeks || {}).length],
+    ["abs", "Nieobecności i wyjazdy", `wpisy: ${Object.keys(json.absences || {}).length}`, !!Object.keys(json.absences || {}).length],
     ["notes", "Uwagi i pomysły", `uwagi: ${Object.keys(json.notes || {}).length} – nadpiszą uwagi o tych samych id`, !!Object.keys(json.notes || {}).length],
     ["shop", "Listy zakupów i podpowiedzi", `listy: ${lists.length}, podpowiedzi: ${mem} – nadpiszą listy o tych samych id`, !!(lists.length || mem)]];
   const d = sheet(`<h3>Przywróć z kopii</h3>
@@ -1098,6 +1188,7 @@ function openRestore(json) {
         for (const [id, it] of Object.entries(items)) (chunks[chunkOf(it)] ||= { items: {} }).items[id] = it;
         for (const [cid, c] of Object.entries(chunks)) await be.setChunk(coll, cid, c);
       }
+      if (sel.has("abs")) for (const [id, a] of Object.entries(json.absences)) await be.setAbsence(id, a);
       if (sel.has("notes")) for (const [id, n] of Object.entries(json.notes)) await be.setNote(id, n);
       if (sel.has("weeks")) for (const [sat, w] of Object.entries(json.weeks)) await be.setWeek(sat, w);
       if (sel.has("shop")) {
@@ -1112,7 +1203,7 @@ function openRestore(json) {
 // ---------- uruchomienie ----------
 be.onAuth(async (u) => {
   S.user = u;
-  if (!u) { S.config = null; if (S.notesUnsub) { S.notesUnsub(); S.notesUnsub = null; S.notes = undefined; } if (S.week.unsub) S.week.unsub(); S.week = { sat: null, data: undefined, unsub: null }; return renderLogin(); }
+  if (!u) { S.config = null; if (S.absUnsub) { S.absUnsub(); S.absUnsub = null; S.absences = []; } if (S.notesUnsub) { S.notesUnsub(); S.notesUnsub = null; S.notes = undefined; } if (S.week.unsub) S.week.unsub(); S.week = { sat: null, data: undefined, unsub: null }; return renderLogin(); }
   screen(`<div class="center"><p class="muted">Wczytywanie…</p></div>`);
   await boot();
 });

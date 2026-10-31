@@ -1,9 +1,10 @@
-// backend-demo.js – v0.6.0 – tryb pokazowy bez Firebase (adres z ?demo=1); dane tylko w pamięci przeglądarki
+// backend-demo.js – v0.8.0 – tryb pokazowy bez Firebase (adres z ?demo=1); dane tylko w pamięci przeglądarki
 // Sprawdza ograniczenia Firestore (brak tablic w tablicach, brak undefined), żeby błędy wychodziły już w demo.
 import { OWNER_EMAIL } from "./config.js";
 
 export function createBackend() {
-  const store = { config: null, profiles: {}, products: {}, recipes: {}, weeks: {}, shopping: {}, items: {}, uwagi: {} };
+  const store = { config: null, profiles: {}, products: {}, recipes: {}, weeks: {}, shopping: {}, items: {}, uwagi: {}, absences: {} };
+  const aw = []; const nAbs = () => aw.forEach(cb => setTimeout(() => cb(Object.entries(clone(store.absences)).map(([id, a]) => ({ ...a, id }))), 0));
   const nw = []; const nNotes = () => nw.forEach(cb => setTimeout(() => cb(clone(store.uwagi)), 0));
   const lw = []; const iw = {}; let seq = 0;
   const nLists = () => lw.forEach(cb => setTimeout(() => cb(clone(store.shopping)), 0));
@@ -56,6 +57,10 @@ export function createBackend() {
       if (listPatch) { Object.assign(store.shopping[l], clone(listPatch)); nLists(); } nItems(l); },
     async rememberItem(key, entry) { const m = store.shopping._pamiec ||= { items: {} }; m.items[key] = clone(entry); nLists(); },
     async dumpShopping() { const out = clone(store.shopping); for (const id of Object.keys(out)) if (!id.startsWith("_")) out[id]._items = clone(store.items[id] || {}); return out; },
+    watchAbsences(cb) { aw.push(cb); nAbs(); return () => aw.splice(aw.indexOf(cb), 1); },
+    newAbsenceId: () => "A" + (++seq) + Date.now().toString(36),
+    async setAbsence(id, d) { store.absences[id] = clone(d); nAbs(); },
+    async deleteAbsence(id) { delete store.absences[id]; nAbs(); },
     watchNotes(cb) { nw.push(cb); setTimeout(() => cb(clone(store.uwagi)), 0); return () => nw.splice(nw.indexOf(cb), 1); },
     newNoteId: () => "N" + (++seq) + Date.now().toString(36),
     async setNote(id, d) { store.uwagi[id] = clone(d); nNotes(); },

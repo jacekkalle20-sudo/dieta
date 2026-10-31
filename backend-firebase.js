@@ -1,4 +1,4 @@
-// backend-firebase.js – v0.6.0 – dostęp do Firebase (Auth + Firestore)
+// backend-firebase.js – v0.8.0 – dostęp do Firebase (Auth + Firestore)
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
 import { getAuth, GoogleAuthProvider, signInWithPopup, signOut as fbSignOut, onAuthStateChanged }
   from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
@@ -77,6 +77,11 @@ export function createBackend() {
         const it = {}; (await getDocs(collection(db, "shopping", d.id, "items"))).forEach(x => it[x.id] = x.data()); out[d.id]._items = it; }
       return out;
     },
+    // ---- nieobecności i wyjazdy ----
+    watchAbsences(cb, onErr) { return onSnapshot(collection(db, "absences"), (q) => { const out = []; q.forEach(d => out.push({ ...d.data(), id: d.id })); cb(out); }, onErr); },
+    newAbsenceId: () => doc(collection(db, "absences")).id,
+    setAbsence: (id, data) => setDoc(doc(db, "absences", id), data),
+    deleteAbsence: (id) => deleteDoc(doc(db, "absences", id)),
     // ---- uwagi i pomysły ----
     watchNotes(cb, onErr) { return onSnapshot(collection(db, "uwagi"), (q) => { const out = {}; q.forEach(d => out[d.id] = d.data()); cb(out); }, onErr); },
     newNoteId: () => doc(collection(db, "uwagi")).id,

@@ -1,4 +1,4 @@
-// week.js – v0.7.0 – tydzień planu (sobota–piątek), generator i operacje na posiłkach (bez zależności od Firebase)
+// week.js – v0.8.0 – tydzień planu (sobota–piątek), generator i operacje na posiłkach (bez zależności od Firebase)
 import { SLOTS } from "./defaults.js";
 import { slotKcal } from "./scaling.js";
 
@@ -49,6 +49,21 @@ export function fixedException(profile, dn, slot) {
   return (profile.fixedExceptions || []).find(e => e.days.includes(dn) && e.slots.includes(slot)) || null;
 }
 
+// ---------- nieobecności (M5) ----------
+// absence = { id, type: "poza" | "dom", profiles: [pid], from, to, slots: [slot] | null (wszystkie), kcal, note }
+// „poza” – osoba poza domem (urlop, delegacja, wyjazd); „dom” – w domu mimo stałego wyjątku (np. ferie: obiad w domu zamiast w szkole).
+export function absencesFor(ctx, pid, date, slot) {
+  return (ctx.absences || []).filter(a => (a.profiles || []).includes(pid) && a.from <= date && date <= a.to && (!a.slots || a.slots.includes(slot)));
+}
+// Stan wg reguł (bez ręcznych zmian w planie): nieobecność „poza” > „w domu” > stały wyjątek
+export function ruleState(ctx, pid, date, slot) {
+  const fx = fixedException(ctx.profiles[pid], dayNum(date), slot); const abs = absencesFor(ctx, pid, date, slot);
+  const out = abs.find(a => a.type !== "dom"); const home = abs.find(a => a.type === "dom");
+  if (out) return { outside: true, fixed: false, kcal: out.kcal ?? null, note: out.note || "nieobecność", absence: out.id };
+  if (fx && home) return { outside: false, fixed: true, kcal: null, note: "", absence: home.id, fixedOff: true };
+  if (fx) return { outside: true, fixed: true, kcal: fx.kcal ?? null, note: fx.note || "" };
+  return { outside: false, fixed: false, kcal: null, note: "" };
+}
 export const participants = (meal) => Object.entries(meal?.per || {}).filter(([, p]) => !p.outside).map(([pid]) => pid);
 // Przepis, który je dana osoba w posiłku
 export const recipeOf = (meal, pid) => meal?.mode === "shared" ? meal.recipeId : meal?.per?.[pid]?.recipeId;
@@ -108,8 +123,8 @@ function skeleton(ctx, date, slot, old) {
   const dn = dayNum(date); const per = {};
   for (const [pid, p] of Object.entries(ctx.profiles)) {
     if (p.slots?.[slot] == null) continue;
-    const fx = fixedException(p, dn, slot); const o = old?.per?.[pid];
-    const e = { outside: !!fx, fixed: !!fx, kcal: fx?.kcal ?? null, note: fx?.note || "" };
+    const o = old?.per?.[pid];
+    const e = ruleState(ctx, pid, date, slot); if (!e.absence) delete e.absence; if (!e.fixedOff) delete e.fixedOff;
     if (o?.manual) Object.assign(e, { outside: o.outside, kcal: o.kcal ?? null, manual: true, fixedOff: !!o.fixedOff });
     if (o?.with && !e.outside) e.with = o.with;
     per[pid] = e;
@@ -384,3 +399,38 @@ export function setSub(week, date, slot, pid, from, sub, scope = "meal") {
   }
   return [...slots];
 }
+
+// Po dodaniu / usunięciu nieobecności: aktualizacja zaplanowanego tygodnia w podanych dniach.
+// Ręczne zmiany („poza domem” w menu ⋯) mają pierwszeństwo. Osoba wracająca do posiłku indywidualnego dostaje danie;
+// wspólny posiłek bez dania (wszyscy byli poza domem) dostaje danie dla obecnych. Zwraca listę zmienionych slotów.
+export function refreshPresence(week, ctx, dates) {
+  const changed = new Set();
+  for (const d of weekDates(week.start)) {
+    if (!dates.includes(d)) continue;
+    for (const sl of SLOTS) {
+      const m = week.days[d]?.[sl]; if (!m) continue; let ch = false;
+      for (const [pid, e] of Object.entries(m.per)) {
+        if (e.manual || e.extra || !ctx.profiles[pid]) continue;
+        const rs = ruleState(ctx, pid, d, sl);
+        if (e.outside === rs.outside && (e.absence || null) === (rs.absence || null) && e.note === rs.note) continue;
+        e.outside = rs.outside; e.fixed = rs.fixed; e.kcal = rs.kcal; e.note = rs.note;
+        if (rs.absence) e.absence = rs.absence; else delete e.absence;
+        if (rs.fixedOff) e.fixedOff = true; else delete e.fixedOff;
+        if (e.outside) delete e.with;
+        ch = true;
+      }
+      if (!ch) continue;
+      const hist = () => ({ ...ctx, history: [...ctx.history, ...historyFromWeek(week)] });
+      if (m.mode === "shared") {
+        if (!m.recipeId && participants(m).length) { const unit = { slot: sl, days: [d], pids: participants(m) }; m.recipeId = pickRecipe(hist(), unit); }
+      } else for (const pid of participants(m)) {
+        const e = m.per[pid]; if (e.recipeId || e.with) continue;
+        const unit = { slot: sl, days: [d], pids: [pid] }; e.recipeId = pickRecipe(hist(), unit);
+      }
+      normalize(ctx, week, sl); changed.add(sl);
+    }
+  }
+  return [...changed];
+}
+// Dni nieobecności w danym tygodniu (do odświeżenia planu)
+export const absenceDates = (week, a) => weekDates(week.start).filter(d => a.from <= d && d <= a.to);
